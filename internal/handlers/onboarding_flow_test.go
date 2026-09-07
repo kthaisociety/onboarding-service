@@ -119,6 +119,7 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 	NewNotifyHandler(db, cfg, backend).Register(api)
 	NewPortalHandler(db, cfg, backend, provisioningService).Register(api)
 	NewRetryHandler(db, cfg, provisioningService).Register(api)
+	NewRecordsHandler(db, cfg).Register(api)
 
 	return engine, cfg, fake
 }
@@ -346,5 +347,47 @@ func TestRetryProvisioning(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/retry-provisioning",
 			map[string]string{"application_id": "does-not-exist"}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusNotFound, rec.Code)
+	})
+}
+
+func TestRecordsHandler(t *testing.T) {
+	engine, cfg, fake := newTestServer(t)
+
+	t.Run("missing secret is rejected", func(t *testing.T) {
+		rec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, "")
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("wrong secret is rejected", func(t *testing.T) {
+		rec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, "wrong-secret")
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("returns created records, newest first", func(t *testing.T) {
+		doJSON(t, engine, "POST", "/notify", map[string]string{
+			"application_id": "app-records-1",
+			"first_name":     "Ada",
+			"last_name":      "Lovelace",
+			"personal_email": "ada@example.com",
+			"assigned_team":  "IT",
+		}, cfg.OnboardingServiceSecret)
+		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
+
+		doJSON(t, engine, "POST", "/notify", map[string]string{
+			"application_id": "app-records-2",
+			"first_name":     "Grace",
+			"last_name":      "Hopper",
+			"personal_email": "grace@example.com",
+			"assigned_team":  "Development",
+		}, cfg.OnboardingServiceSecret)
+		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
+
+		rec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var records []models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &records))
+		require.GreaterOrEqual(t, len(records), 2)
+		require.Equal(t, "Grace", records[0].FirstName, "newest record should come first")
 	})
 }

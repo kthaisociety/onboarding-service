@@ -105,6 +105,7 @@ func main() {
 	handlers.NewNotifyHandler(db, cfg, backend).Register(api)
 	handlers.NewPortalHandler(db, cfg, backend, provisioningService).Register(api)
 	handlers.NewRetryHandler(db, cfg, provisioningService).Register(api)
+	handlers.NewRecordsHandler(db, cfg).Register(api)
 
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("onboarding-service listening on %s", addr)
