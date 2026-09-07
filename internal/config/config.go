@@ -56,8 +56,16 @@ type Config struct {
 	// bare env var is fragile for multi-line JSON, so a mounted file path is
 	// preferred.
 	GoogleServiceAccountJSON string
-	// GoogleImpersonateAs is the Workspace super-admin email the service
-	// account impersonates via domain-wide delegation.
+	// GoogleImpersonateAs is the Workspace user the service account
+	// impersonates via domain-wide delegation. Google's Admin SDK Directory
+	// API requires this — it checks the impersonated user's own admin
+	// privileges, not just the OAuth scope grant, so some impersonation
+	// target is unavoidable. This should NOT be an actual person's day-to-day
+	// account: create a dedicated Workspace user with a Custom Admin Role
+	// scoped to only "manage users" + "manage group membership" (Admin
+	// Console -> Account -> Admin roles), not Super Admin, and impersonate
+	// that instead. Bounds this credential's blast radius to exactly what
+	// this service does, independent of any real person's account.
 	GoogleImpersonateAs string
 
 	// MattermostURL is this org's Mattermost instance base URL, no trailing
