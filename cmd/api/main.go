@@ -49,6 +49,14 @@ func main() {
 	checkBackendConnectivity(cfg.BackendURL)
 
 	r := gin.Default()
+	// This service never reads c.ClientIP() (checked: no call sites), so
+	// there's nothing relying on forwarded-header trust today — but Gin's
+	// default trusts every proxy for X-Forwarded-For, which is a footgun for
+	// whoever adds IP-based logic later. Lock it down now rather than leave
+	// the insecure default in place.
+	if err := r.SetTrustedProxies(nil); err != nil {
+		log.Fatalf("failed to set trusted proxies: %v", err)
+	}
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "healthy", "service": "onboarding-service"})
 	})
