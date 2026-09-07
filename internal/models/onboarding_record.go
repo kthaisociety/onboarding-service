@@ -21,12 +21,22 @@ const (
 // a different service's database entirely (see
 // onboarding-service-plan.md's isolation reasoning).
 //
+// ApplicationID is nullable: a record triggered by an admin's manual
+// onboarding action (outside the recruitment pipeline) has no backend
+// GeneralApplication at all. nil is the honest representation of that —
+// see Notify (skips the dedup check when nil) and
+// internal/provisioning.Service.Provision (skips the record-account
+// callback when nil, since there's nothing on the backend to update). A
+// uniqueIndex on a nullable column still permits any number of NULL rows
+// (NULL is never equal to NULL in SQL), so this doesn't weaken dedup for
+// real, backend-triggered records.
+//
 // States beyond kth_email_confirmed (provisioned, emailed, complete,
 // failed) are driven by internal/provisioning.Service.Provision, called
 // from PortalHandler.Confirm once a record reaches kth_email_confirmed.
 type OnboardingRecord struct {
 	gorm.Model
-	ApplicationID string          `gorm:"uniqueIndex;not null" json:"application_id"`
+	ApplicationID *string         `gorm:"uniqueIndex" json:"application_id"`
 	FirstName     string          `gorm:"not null" json:"first_name"`
 	LastName      string          `gorm:"not null" json:"last_name"`
 	PersonalEmail string          `gorm:"not null" json:"personal_email"`

@@ -32,33 +32,52 @@ func (h *NotifyHandler) Register(r *gin.RouterGroup) {
 }
 
 type notifyRequest struct {
-	ApplicationID string `json:"application_id" binding:"required"`
-	FirstName     string `json:"first_name" binding:"required"`
-	LastName      string `json:"last_name" binding:"required"`
-	PersonalEmail string `json:"personal_email" binding:"required"`
-	AssignedTeam  string `json:"assigned_team" binding:"required"`
+	// ApplicationID is nil for an admin's manual onboarding action (outside
+	// the recruitment pipeline, no backend GeneralApplication exists) —
+	// deliberately not binding:"required".
+	ApplicationID *string `json:"application_id"`
+	FirstName     string  `json:"first_name" binding:"required"`
+	LastName      string  `json:"last_name" binding:"required"`
+	PersonalEmail string  `json:"personal_email" binding:"required"`
+	AssignedTeam  string  `json:"assigned_team" binding:"required"`
+}
+
+// logID renders an *string for a log line without printing a pointer
+// address — "manual" when nil, matching how such records are described
+// elsewhere (no backend application to reference).
+func logID(id *string) string {
+	if id == nil {
+		return "manual"
+	}
+	return *id
 }
 
 // Notify creates the OnboardingRecord and sends the "start your onboarding"
-// email. Idempotent on ApplicationID: since the backend's own call to this
-// endpoint is fire-and-forget with no retry logic today, a duplicate call
-// is more likely a mistake than a legitimate re-notify — it returns the
-// existing record instead of creating a second one or re-issuing a token.
+// email. Idempotent on ApplicationID when one is present: since the
+// backend's own call to this endpoint is fire-and-forget with no retry
+// logic today, a duplicate call is more likely a mistake than a legitimate
+// re-notify — it returns the existing record instead of creating a second
+// one or re-issuing a token. A nil ApplicationID (manual onboarding) skips
+// this check entirely and always creates a new record — there's no
+// real-world event to deduplicate against the way there is for a backend
+// accept-click.
 func (h *NotifyHandler) Notify(c *gin.Context) {
 	var req notifyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "application_id, first_name, last_name, personal_email, and assigned_team are required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "first_name, last_name, personal_email, and assigned_team are required"})
 		return
 	}
 
-	var existing models.OnboardingRecord
-	if err := h.db.Where("application_id = ?", req.ApplicationID).First(&existing).Error; err == nil {
-		c.JSON(http.StatusOK, existing)
-		return
-	} else if err != gorm.ErrRecordNotFound {
-		log.Printf("notify: database error checking for existing record for %s: %v", req.ApplicationID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
+	if req.ApplicationID != nil {
+		var existing models.OnboardingRecord
+		if err := h.db.Where("application_id = ?", *req.ApplicationID).First(&existing).Error; err == nil {
+			c.JSON(http.StatusOK, existing)
+			return
+		} else if err != gorm.ErrRecordNotFound {
+			log.Printf("notify: database error checking for existing record for %s: %v", logID(req.ApplicationID), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+			return
+		}
 	}
 
 	record := models.OnboardingRecord{
@@ -72,7 +91,7 @@ func (h *NotifyHandler) Notify(c *gin.Context) {
 
 	raw, hash, err := utils.GenerateToken()
 	if err != nil {
-		log.Printf("notify: failed to generate token for %s: %v", req.ApplicationID, err)
+		log.Printf("notify: failed to generate token for %s: %v", logID(req.ApplicationID), err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
 	}
@@ -90,7 +109,7 @@ func (h *NotifyHandler) Notify(c *gin.Context) {
 		return tx.Create(&token).Error
 	})
 	if err != nil {
-		log.Printf("notify: failed to save record/token for %s: %v", req.ApplicationID, err)
+		log.Printf("notify: failed to save record/token for %s: %v", logID(req.ApplicationID), err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save"})
 		return
 	}
@@ -100,7 +119,7 @@ func (h *NotifyHandler) Notify(c *gin.Context) {
 		body := "Congratulations on being accepted to KTH AI Society! To get started, click below and " +
 			"tell us your kth.se email address so we can set up your kthais.com account and Mattermost access."
 		if err := h.backend.SendEmail(req.PersonalEmail, "Start your KTH AI Society onboarding", body, startLink, "Start onboarding"); err != nil {
-			log.Printf("notify: failed to send start-portal email for %s: %v", req.ApplicationID, err)
+			log.Printf("notify: failed to send start-portal email for %s: %v", logID(req.ApplicationID), err)
 		}
 	}()
 

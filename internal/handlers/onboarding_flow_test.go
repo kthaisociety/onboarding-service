@@ -164,7 +164,8 @@ func TestNotify(t *testing.T) {
 
 		var record models.OnboardingRecord
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &record))
-		require.Equal(t, "app-123", record.ApplicationID)
+		require.NotNil(t, record.ApplicationID)
+		require.Equal(t, "app-123", *record.ApplicationID)
 		require.Equal(t, models.StateNotified, record.State)
 
 		require.Eventually(t, func() bool { return len(fake.sentEmails) == 1 }, waitFor, tick)
@@ -182,6 +183,30 @@ func TestNotify(t *testing.T) {
 	t.Run("missing fields are rejected", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/notify", map[string]string{"application_id": "app-456"}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("a manual onboarding (no application_id) is accepted and never deduplicated", func(t *testing.T) {
+		manualBody := map[string]string{
+			"first_name":     "Board",
+			"last_name":      "Member",
+			"personal_email": "board@example.com",
+			"assigned_team":  "IT",
+		}
+
+		rec := doJSON(t, engine, "POST", "/notify", manualBody, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var first models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &first))
+		require.Nil(t, first.ApplicationID)
+
+		// A second identical manual submission must create a SECOND record,
+		// not return the first one — there's no application_id to
+		// deduplicate on, unlike the backend-triggered path above.
+		rec2 := doJSON(t, engine, "POST", "/notify", manualBody, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec2.Code)
+		var second models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &second))
+		require.NotEqual(t, first.ID, second.ID)
 	})
 }
 

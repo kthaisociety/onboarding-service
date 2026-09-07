@@ -135,10 +135,12 @@ func newTestHarness(t *testing.T) *testHarness {
 	return h
 }
 
+func strPtr(s string) *string { return &s }
+
 func newTestRecord(db *gorm.DB, t *testing.T) *models.OnboardingRecord {
 	t.Helper()
 	record := &models.OnboardingRecord{
-		ApplicationID: "app-1",
+		ApplicationID: strPtr("app-1"),
 		FirstName:     "Grace",
 		LastName:      "Hopper",
 		PersonalEmail: "grace@example.com",
@@ -148,6 +150,36 @@ func newTestRecord(db *gorm.DB, t *testing.T) *models.OnboardingRecord {
 	}
 	require.NoError(t, db.Create(record).Error)
 	return record
+}
+
+// newTestManualRecord has a nil ApplicationID, matching what an admin's
+// manual onboarding action produces — no backend GeneralApplication exists
+// for it.
+func newTestManualRecord(db *gorm.DB, t *testing.T) *models.OnboardingRecord {
+	t.Helper()
+	record := &models.OnboardingRecord{
+		ApplicationID: nil,
+		FirstName:     "Ada",
+		LastName:      "Lovelace",
+		PersonalEmail: "ada@example.com",
+		AssignedTeam:  "IT",
+		State:         models.StateKthEmailConfirmed,
+		KthEmail:      "ada@kth.se",
+	}
+	require.NoError(t, db.Create(record).Error)
+	return record
+}
+
+func TestProvisionManualOnboardingSkipsRecordAccount(t *testing.T) {
+	h := newTestHarness(t)
+	record := newTestManualRecord(h.service.db, t)
+
+	err := h.service.Provision(context.Background(), record)
+	require.NoError(t, err)
+
+	require.Equal(t, models.StateComplete, record.State)
+	require.Equal(t, "ada.lovelace@kthais.com", record.KthaisEmail)
+	require.Empty(t, h.recordedAccounts, "no backend application exists for a manual onboarding — record-account must never be called")
 }
 
 func TestProvisionHappyPath(t *testing.T) {

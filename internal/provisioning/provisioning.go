@@ -99,8 +99,14 @@ func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord
 		return err
 	}
 
-	if err := s.backend.RecordAccount(record.ApplicationID, record.KthaisEmail); err != nil {
-		return fmt.Errorf("record-account: %w", err)
+	// Nil ApplicationID means this is an admin's manual onboarding action —
+	// there's no backend GeneralApplication to report the result to, so
+	// skip the callback entirely rather than calling it with a fabricated
+	// or empty ID.
+	if record.ApplicationID != nil {
+		if err := s.backend.RecordAccount(*record.ApplicationID, record.KthaisEmail); err != nil {
+			return fmt.Errorf("record-account: %w", err)
+		}
 	}
 
 	return s.save(record, models.StateComplete)
