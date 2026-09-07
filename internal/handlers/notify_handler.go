@@ -116,9 +116,14 @@ func (h *NotifyHandler) Notify(c *gin.Context) {
 
 	go func() {
 		startLink := h.cfg.PortalBaseURL + "/start?token=" + raw
-		body := "Congratulations on being accepted to KTH AI Society! To get started, click below and " +
-			"tell us your kth.se email address so we can set up your kthais.com account and Mattermost access."
-		if err := h.backend.SendEmail(req.PersonalEmail, "Start your KTH AI Society onboarding", body, startLink, "Start onboarding"); err != nil {
+		body := "Hi " + req.FirstName + ",\n\n" +
+			"Congratulations on being accepted to KTH AI Society!\n\n" +
+			"To get started:\n" +
+			"1. Click the button below to open the onboarding portal\n" +
+			"2. Enter your kth.se email address\n" +
+			"3. Confirm your kth.se address via the link we send you\n" +
+			"4. We'll set up your kthais.com account and Mattermost access and email you the details"
+		if err := h.backend.SendEmail(req.PersonalEmail, "Welcome to KTH AI Society", body, startLink, "Start onboarding"); err != nil {
 			log.Printf("notify: failed to send start-portal email for %s: %v", logID(req.ApplicationID), err)
 		}
 	}()

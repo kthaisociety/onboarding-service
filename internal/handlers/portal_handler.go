@@ -116,7 +116,8 @@ func (h *PortalHandler) SubmitEmail(c *gin.Context) {
 
 	go func() {
 		confirmLink := h.cfg.PortalBaseURL + "/confirm?token=" + raw
-		body := "Please confirm this is your KTH email address to continue setting up your KTH AI Society account."
+		body := "Hi " + record.FirstName + ",\n\n" +
+			"Please confirm this is your KTH email address to continue setting up your KTH AI Society account."
 		if err := h.backend.SendEmail(kthEmail, "Confirm your KTH email", body, confirmLink, "Confirm this is me"); err != nil {
 			log.Printf("submit-email: failed to send confirmation email for record %d: %v", record.ID, err)
 		}

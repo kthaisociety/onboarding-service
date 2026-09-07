@@ -160,15 +160,19 @@ func (s *Service) ensureAccount(ctx context.Context, record *models.OnboardingRe
 
 func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword string) error {
 	accountBody := fmt.Sprintf(
-		"Here is your KTH AI Society account: %s\nTemporary password: %s\n\n"+
-			"You'll be asked to set a new password the first time you log in.",
-		record.KthaisEmail, tempPassword,
+		"Hi %s,\n\n"+
+			"Here is your KTH AI Society account:\n"+
+			"1. Email: %s\n"+
+			"2. Temporary password: %s\n"+
+			"3. You'll be asked to set a new password the first time you log in",
+		record.FirstName, record.KthaisEmail, tempPassword,
 	)
 	if err := s.backend.SendEmail(record.KthEmail, "Your KTH AI Society account", accountBody, "", ""); err != nil {
 		return fmt.Errorf("account-info email: %w", err)
 	}
 
-	mattermostBody := "You've been invited to the KTH AI Society Mattermost workspace — check your inbox " +
+	mattermostBody := "Hi " + record.FirstName + ",\n\n" +
+		"You've been invited to the KTH AI Society Mattermost workspace — check your inbox " +
 		"for an invite link to get started."
 	if err := s.backend.SendEmail(record.KthEmail, "Getting started with Mattermost", mattermostBody, "", ""); err != nil {
 		return fmt.Errorf("mattermost getting-started email: %w", err)
