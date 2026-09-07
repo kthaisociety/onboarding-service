@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
+	"onboarding-service/internal/googleworkspace"
 	"onboarding-service/internal/handlers"
+	"onboarding-service/internal/mattermost"
 	"onboarding-service/internal/models"
+	"onboarding-service/internal/provisioning"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -28,6 +32,21 @@ func main() {
 	if cfg.BackendURL == "" {
 		log.Fatal("BACKEND_URL must be set")
 	}
+	if cfg.GoogleServiceAccountJSON == "" {
+		log.Fatal("GOOGLE_ADMIN_SERVICE_ACCOUNT_JSON (or _PATH) must be set")
+	}
+	if cfg.GoogleImpersonateAs == "" {
+		log.Fatal("GOOGLE_ADMIN_IMPERSONATE_AS must be set")
+	}
+	if cfg.MattermostURL == "" {
+		log.Fatal("MATTERMOST_URL must be set")
+	}
+	if cfg.MattermostBotToken == "" {
+		log.Fatal("MATTERMOST_BOT_TOKEN must be set")
+	}
+	if cfg.MattermostTeamID == "" {
+		log.Fatal("MATTERMOST_TEAM_ID must be set")
+	}
 
 	db, err := gorm.Open(sqlite.Open(cfg.DBPath), &gorm.Config{})
 	if err != nil {
@@ -38,6 +57,27 @@ func main() {
 	}
 
 	backend := backendclient.New(cfg)
+
+	// Fatal on failure, unlike the backend check below: a broken Google
+	// credential means this service cannot do the one thing it exists for.
+	// Construction itself makes no network call (the JWT exchange is lazy),
+	// so this doesn't slow down or risk boot.
+	googleCtx, cancelGoogle := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelGoogle()
+	googleClient, err := googleworkspace.NewClient(googleCtx, []byte(cfg.GoogleServiceAccountJSON), cfg.GoogleImpersonateAs)
+	if err != nil {
+		log.Fatalf("failed to initialize Google Workspace client: %v", err)
+	}
+
+	mattermostClient := mattermost.New(cfg)
+	// Non-fatal, logged only — same idiom as checkBackendConnectivity below.
+	if err := mattermostClient.Ping(); err != nil {
+		log.Printf("startup check: could not reach Mattermost at %s: %v", cfg.MattermostURL, err)
+	} else {
+		log.Printf("startup check: Mattermost at %s reachable", cfg.MattermostURL)
+	}
+
+	provisioningService := provisioning.NewService(db, googleClient, mattermostClient, backend)
 
 	// One-shot reachability check against the backend, logged at boot only —
 	// not a recurring healthcheck. Purpose is to surface a misconfigured
@@ -63,7 +103,8 @@ func main() {
 
 	api := r.Group("/")
 	handlers.NewNotifyHandler(db, cfg, backend).Register(api)
-	handlers.NewPortalHandler(db, cfg, backend).Register(api)
+	handlers.NewPortalHandler(db, cfg, backend, provisioningService).Register(api)
+	handlers.NewRetryHandler(db, cfg, provisioningService).Register(api)
 
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("onboarding-service listening on %s", addr)

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"crypto/subtle"
 	"log"
 	"net/http"
 	"time"
@@ -29,23 +28,7 @@ func NewNotifyHandler(db *gorm.DB, cfg *config.Config, backend *backendclient.Cl
 }
 
 func (h *NotifyHandler) Register(r *gin.RouterGroup) {
-	r.POST("/notify", h.requireServiceSecret, h.Notify)
-}
-
-// requireServiceSecret rejects before touching any handler logic if the
-// caller doesn't present the exact shared secret — mirrors
-// landingpage-backend's own onboarding-service auth check
-// (OnboardingHandler.requireOnboardingServiceSecret) so both sides fail
-// closed the same way. An unset secret must never be treated as "no secret
-// required".
-func (h *NotifyHandler) requireServiceSecret(c *gin.Context) {
-	provided := c.GetHeader("X-Service-Secret")
-	if h.cfg.OnboardingServiceSecret == "" || provided == "" ||
-		subtle.ConstantTimeCompare([]byte(provided), []byte(h.cfg.OnboardingServiceSecret)) != 1 {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	c.Next()
+	r.POST("/notify", requireServiceSecret(h.cfg), h.Notify)
 }
 
 type notifyRequest struct {

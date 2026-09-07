@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/base64"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -47,6 +49,28 @@ type Config struct {
 	// pattern now so the frontend work has a fixed contract to build
 	// against. No trailing slash.
 	PortalBaseURL string
+
+	// GoogleServiceAccountJSON is the raw JSON key for the domain-wide-
+	// delegation service account used to provision Workspace accounts. See
+	// resolveGoogleServiceAccountJSON for how this is actually loaded — a
+	// bare env var is fragile for multi-line JSON, so a mounted file path is
+	// preferred.
+	GoogleServiceAccountJSON string
+	// GoogleImpersonateAs is the Workspace super-admin email the service
+	// account impersonates via domain-wide delegation.
+	GoogleImpersonateAs string
+
+	// MattermostURL is this org's Mattermost instance base URL, no trailing
+	// slash.
+	MattermostURL string
+	// MattermostBotToken authenticates as a dedicated bot account (not an
+	// admin personal access token — deliberate least-privilege choice, see
+	// onboarding-service-plan.md).
+	MattermostBotToken string
+	// MattermostTeamID is the KTHAIS team's id within the Mattermost
+	// instance — looked up from that instance, not derivable from anything
+	// else this service knows.
+	MattermostTeamID string
 }
 
 // StartPortalTokenValidity governs how long a "start your onboarding" link
@@ -64,12 +88,17 @@ const ConfirmKthEmailTokenValidity = 24 * time.Hour
 
 func LoadConfig() *Config {
 	cfg := &Config{
-		Host:                    getEnv("HOST", ""),
-		Port:                    getEnv("PORT", "8000"),
-		DBPath:                  getEnv("DB_PATH", "./onboarding.db"),
-		OnboardingServiceSecret: getEnv("ONBOARDING_SERVICE_SECRET", ""),
-		BackendURL:              strings.TrimSuffix(getEnv("BACKEND_URL", ""), "/"),
-		PortalBaseURL:           strings.TrimSuffix(getEnv("PORTAL_BASE_URL", ""), "/"),
+		Host:                     getEnv("HOST", ""),
+		Port:                     getEnv("PORT", "8000"),
+		DBPath:                   getEnv("DB_PATH", "./onboarding.db"),
+		OnboardingServiceSecret:  getEnv("ONBOARDING_SERVICE_SECRET", ""),
+		BackendURL:               strings.TrimSuffix(getEnv("BACKEND_URL", ""), "/"),
+		PortalBaseURL:            strings.TrimSuffix(getEnv("PORTAL_BASE_URL", ""), "/"),
+		GoogleServiceAccountJSON: resolveGoogleServiceAccountJSON(),
+		GoogleImpersonateAs:      getEnv("GOOGLE_ADMIN_IMPERSONATE_AS", ""),
+		MattermostURL:            strings.TrimSuffix(getEnv("MATTERMOST_URL", ""), "/"),
+		MattermostBotToken:       getEnv("MATTERMOST_BOT_TOKEN", ""),
+		MattermostTeamID:         getEnv("MATTERMOST_TEAM_ID", ""),
 	}
 	return cfg
 }
@@ -79,4 +108,33 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// resolveGoogleServiceAccountJSON tries, in order: a mounted file path (the
+// same Dokploy-volume pattern already used for DB_PATH — the robust option,
+// since multi-line JSON in a bare env var is fragile across .env files and
+// some PaaS env-var UIs), then GOOGLE_ADMIN_SERVICE_ACCOUNT_JSON as base64
+// if it doesn't look like raw JSON, then the raw value as a literal
+// fallback.
+func resolveGoogleServiceAccountJSON() string {
+	if path := getEnv("GOOGLE_ADMIN_SERVICE_ACCOUNT_JSON_PATH", ""); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("config: failed to read GOOGLE_ADMIN_SERVICE_ACCOUNT_JSON_PATH (%s): %v", path, err)
+			return ""
+		}
+		return string(data)
+	}
+
+	raw := getEnv("GOOGLE_ADMIN_SERVICE_ACCOUNT_JSON", "")
+	if raw == "" || strings.HasPrefix(strings.TrimSpace(raw), "{") {
+		return raw
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		log.Printf("config: GOOGLE_ADMIN_SERVICE_ACCOUNT_JSON is neither raw JSON nor valid base64: %v", err)
+		return raw
+	}
+	return string(decoded)
 }

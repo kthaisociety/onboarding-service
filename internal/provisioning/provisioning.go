@@ -1,0 +1,197 @@
+// Package provisioning orchestrates build-order steps 6-8 of
+// onboarding-service-plan.md's flow: creating a member's @kthais.com
+// Google Workspace account, adding them to their team's Google Group,
+// inviting them to Mattermost, sending the final emails, and reporting the
+// result back to landingpage-backend.
+package provisioning
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"onboarding-service/internal/backendclient"
+	"onboarding-service/internal/googleworkspace"
+	"onboarding-service/internal/mattermost"
+	"onboarding-service/internal/models"
+	"onboarding-service/internal/utils"
+
+	"gorm.io/gorm"
+)
+
+// PrimaryDomain is hardcoded rather than a config field — same "simplest is
+// fine, this is not a hot path" reasoning the plan doc applies to
+// teamGroups below; this service will only ever provision @kthais.com
+// addresses.
+const PrimaryDomain = "kthais.com"
+
+// teamGroups mirrors landingpage-backend's five allowedApplicationTeams
+// (internal/handlers/general_application_handler.go) — hardcoded per the
+// plan doc's own "simplest is fine" framing rather than a team_groups.yaml
+// + parser. See team_groups_test.go for the drift tripwire against the
+// backend's list.
+var teamGroups = map[string]string{
+	"Business":    "business@kthais.com",
+	"Development": "development@kthais.com",
+	"Research":    "research@kthais.com",
+	"Growth":      "growth@kthais.com",
+	"IT":          "it@kthais.com",
+}
+
+// Service holds this service's own isolated credentials (Google Workspace
+// domain-wide delegation, Mattermost bot token) plus the backend client
+// used for anything landingpage-backend already owns (email sending,
+// bookkeeping) — see onboarding-service-plan.md's "Why split it".
+type Service struct {
+	db         *gorm.DB
+	google     googleworkspace.Provisioner
+	mattermost *mattermost.Client
+	backend    *backendclient.Client
+}
+
+func NewService(db *gorm.DB, google googleworkspace.Provisioner, mm *mattermost.Client, backend *backendclient.Client) *Service {
+	return &Service{db: db, google: google, mattermost: mm, backend: backend}
+}
+
+// Provision runs steps 6-8 against record. It is idempotent end-to-end —
+// safe to call more than once for the same record (this is what makes the
+// retry-provisioning endpoint safe): each step checks or tolerates having
+// already been done, rather than assuming a fresh start. Never panics out
+// to the caller; any error or panic ends with record.State = StateFailed
+// and record.FailureReason set to a sanitized (credential-free) message.
+func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic during provisioning: %v", r)
+		}
+		if err != nil {
+			s.fail(record, err)
+		}
+	}()
+
+	groupEmail, ok := teamGroups[record.AssignedTeam]
+	if !ok {
+		return fmt.Errorf("no Google Group mapped for team %q", record.AssignedTeam)
+	}
+
+	tempPassword, err := s.ensureAccount(ctx, record)
+	if err != nil {
+		return fmt.Errorf("google account creation: %w", err)
+	}
+
+	if err := s.google.AddToGroup(ctx, groupEmail, record.KthaisEmail); err != nil {
+		return fmt.Errorf("google group membership: %w", err)
+	}
+
+	if err := s.mattermost.InviteToTeam(record.KthEmail); err != nil {
+		return fmt.Errorf("mattermost invite: %w", err)
+	}
+
+	if err := s.save(record, models.StateProvisioned); err != nil {
+		return err
+	}
+
+	if err := s.sendFinalEmails(record, tempPassword); err != nil {
+		return fmt.Errorf("final emails: %w", err)
+	}
+
+	if err := s.save(record, models.StateEmailed); err != nil {
+		return err
+	}
+
+	if err := s.backend.RecordAccount(record.ApplicationID, record.KthaisEmail); err != nil {
+		return fmt.Errorf("record-account: %w", err)
+	}
+
+	return s.save(record, models.StateComplete)
+}
+
+// ensureAccount creates the Google account on first run. On a retry (record
+// already has a KthaisEmail from a prior partial failure), it confirms the
+// account still exists and resets its password rather than trying to
+// recover the original temp password — that password is never persisted
+// anywhere, so a retry always mints a fresh one. This trades one harmless
+// extra password reset for never writing a live credential to disk.
+func (s *Service) ensureAccount(ctx context.Context, record *models.OnboardingRecord) (tempPassword string, err error) {
+	tempPassword, err = utils.GenerateTempPassword()
+	if err != nil {
+		return "", err
+	}
+
+	if record.KthaisEmail == "" {
+		email, err := googleworkspace.ResolvePrimaryEmail(ctx, s.google, PrimaryDomain, record.FirstName, record.LastName)
+		if err != nil {
+			return "", err
+		}
+		if err := s.google.CreateUser(ctx, googleworkspace.NewUser{
+			PrimaryEmail:  email,
+			FirstName:     record.FirstName,
+			LastName:      record.LastName,
+			RecoveryEmail: record.KthEmail,
+			TempPassword:  tempPassword,
+		}); err != nil {
+			return "", err
+		}
+		record.KthaisEmail = email
+		if err := s.db.Model(record).Update("kthais_email", email).Error; err != nil {
+			return "", err
+		}
+		return tempPassword, nil
+	}
+
+	exists, err := s.google.UserExists(ctx, record.KthaisEmail)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("account %s was created on a prior attempt but no longer exists", record.KthaisEmail)
+	}
+	if err := s.google.ResetPassword(ctx, record.KthaisEmail, tempPassword); err != nil {
+		return "", err
+	}
+	return tempPassword, nil
+}
+
+func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword string) error {
+	accountBody := fmt.Sprintf(
+		"Here is your KTH AI Society account: %s\nTemporary password: %s\n\n"+
+			"You'll be asked to set a new password the first time you log in.",
+		record.KthaisEmail, tempPassword,
+	)
+	if err := s.backend.SendEmail(record.KthEmail, "Your KTH AI Society account", accountBody, "", ""); err != nil {
+		return fmt.Errorf("account-info email: %w", err)
+	}
+
+	mattermostBody := "You've been invited to the KTH AI Society Mattermost workspace — check your inbox " +
+		"for an invite link to get started."
+	if err := s.backend.SendEmail(record.KthEmail, "Getting started with Mattermost", mattermostBody, "", ""); err != nil {
+		return fmt.Errorf("mattermost getting-started email: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) save(record *models.OnboardingRecord, state models.OnboardingState) error {
+	record.State = state
+	if err := s.db.Model(record).Update("state", state).Error; err != nil {
+		return fmt.Errorf("saving state %s: %w", state, err)
+	}
+	return nil
+}
+
+// fail persists state=failed with a sanitized reason. err is wrapped
+// googleapi/HTTP error text from this package's own functions — never a
+// credential — but this is the one place that error text reaches storage,
+// so it's the deliberate chokepoint for that guarantee.
+func (s *Service) fail(record *models.OnboardingRecord, err error) {
+	record.State = models.StateFailed
+	record.FailureReason = err.Error()
+	if dbErr := s.db.Model(record).Updates(map[string]any{
+		"state":          models.StateFailed,
+		"failure_reason": record.FailureReason,
+	}).Error; dbErr != nil {
+		log.Printf("provisioning: failed to persist failure state for record %d: %v (original error: %v)", record.ID, dbErr, err)
+		return
+	}
+	log.Printf("provisioning: record %d failed: %v", record.ID, err)
+}

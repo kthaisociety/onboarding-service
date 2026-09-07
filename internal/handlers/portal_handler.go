@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
 	"onboarding-service/internal/models"
+	"onboarding-service/internal/provisioning"
 	"onboarding-service/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -24,13 +26,14 @@ import (
 // No shared-secret gate on these routes — the single-use token in the URL
 // is the auth.
 type PortalHandler struct {
-	db      *gorm.DB
-	cfg     *config.Config
-	backend *backendclient.Client
+	db           *gorm.DB
+	cfg          *config.Config
+	backend      *backendclient.Client
+	provisioning *provisioning.Service
 }
 
-func NewPortalHandler(db *gorm.DB, cfg *config.Config, backend *backendclient.Client) *PortalHandler {
-	return &PortalHandler{db: db, cfg: cfg, backend: backend}
+func NewPortalHandler(db *gorm.DB, cfg *config.Config, backend *backendclient.Client, provisioning *provisioning.Service) *PortalHandler {
+	return &PortalHandler{db: db, cfg: cfg, backend: backend, provisioning: provisioning}
 }
 
 func (h *PortalHandler) Register(r *gin.RouterGroup) {
@@ -133,9 +136,14 @@ type confirmRequest struct {
 // equivalent), which would silently "confirm" a naive auto-GET link before
 // the actual person ever saw it.
 //
-// Provisioning (Google Workspace account + Mattermost invite) is a later
-// build-order step, not implemented here — a record currently stops at
-// kth_email_confirmed.
+// Once the record reaches kth_email_confirmed, this synchronously runs
+// account provisioning (Google Workspace + Mattermost + final emails) —
+// synchronous rather than this file's usual fire-and-forget email pattern,
+// since this is the one step where the person needs to actually learn
+// something went wrong (via the returned record.state) rather than an
+// account silently never appearing. Always responds 200 — record.state
+// carries the real outcome, and a failure here is recoverable via
+// RetryHandler rather than the request needing to itself succeed or fail.
 func (h *PortalHandler) Confirm(c *gin.Context) {
 	var req confirmRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -169,6 +177,15 @@ func (h *PortalHandler) Confirm(c *gin.Context) {
 		log.Printf("confirm: failed to save record %d: %v", record.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save"})
 		return
+	}
+
+	// Detached context, not c.Request.Context(): provisioning should always
+	// run to completion (or its own timeout) rather than aborting if the
+	// person's connection drops mid-request (e.g. closing a laptop lid).
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err := h.provisioning.Provision(ctx, &record); err != nil {
+		log.Printf("confirm: provisioning failed for record %d: %v", record.ID, err)
 	}
 
 	c.JSON(http.StatusOK, record)

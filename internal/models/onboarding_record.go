@@ -22,9 +22,8 @@ const (
 // onboarding-service-plan.md's isolation reasoning).
 //
 // States beyond kth_email_confirmed (provisioned, emailed, complete,
-// failed) are defined here but not yet driven by any handler — Google
-// Workspace/Mattermost provisioning is a later build-order step. A record
-// currently tops out at kth_email_confirmed.
+// failed) are driven by internal/provisioning.Service.Provision, called
+// from PortalHandler.Confirm once a record reaches kth_email_confirmed.
 type OnboardingRecord struct {
 	gorm.Model
 	ApplicationID string          `gorm:"uniqueIndex;not null" json:"application_id"`
@@ -40,4 +39,9 @@ type OnboardingRecord struct {
 	// State reaches provisioned. Reported back to landingpage-backend via
 	// POST /internal/onboarding/record-account once set.
 	KthaisEmail string `gorm:"default:''" json:"kthais_email"`
+	// FailureReason holds the wrapped error text (never a credential) from
+	// whichever provisioning step last failed, so a state=failed row is
+	// self-describing to an operator without needing to correlate against
+	// container logs.
+	FailureReason string `gorm:"default:''" json:"failure_reason"`
 }
