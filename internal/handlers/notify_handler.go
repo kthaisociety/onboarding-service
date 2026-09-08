@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -89,24 +90,14 @@ func (h *NotifyHandler) Notify(c *gin.Context) {
 		State:         models.StateNotified,
 	}
 
-	raw, hash, err := utils.GenerateToken()
-	if err != nil {
-		log.Printf("notify: failed to generate token for %s: %v", logID(req.ApplicationID), err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
-		return
-	}
-
-	err = h.db.Transaction(func(tx *gorm.DB) error {
+	var raw string
+	err := h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}
-		token := models.OnboardingToken{
-			OnboardingRecordID: record.ID,
-			Purpose:            models.PurposeStartPortal,
-			TokenHash:          hash,
-			ExpiresAt:          time.Now().Add(config.StartPortalTokenValidity),
-		}
-		return tx.Create(&token).Error
+		var tokenErr error
+		raw, tokenErr = issueStartPortalToken(tx, &record)
+		return tokenErr
 	})
 	if err != nil {
 		log.Printf("notify: failed to save record/token for %s: %v", logID(req.ApplicationID), err)
@@ -114,19 +105,53 @@ func (h *NotifyHandler) Notify(c *gin.Context) {
 		return
 	}
 
+	// Only after the transaction above has actually committed — the
+	// recipient could click the link before an earlier-fired goroutine's
+	// send even completes, let alone before the token it references exists.
+	sendStartOnboardingEmailAsync(h.cfg, h.backend, &record, raw)
+
+	c.JSON(http.StatusOK, record)
+}
+
+// issueStartPortalToken creates a fresh start_portal token for record
+// within db (a transaction handle, or the plain *gorm.DB when there's no
+// companion write to keep atomic with), returning the raw token to embed
+// in the emailed link — only its hash is persisted. Shared by Notify (a
+// newly created record) and RecordActionsHandler.Restart (an existing one
+// starting over).
+func issueStartPortalToken(db *gorm.DB, record *models.OnboardingRecord) (string, error) {
+	raw, hash, err := utils.GenerateToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate token: %w", err)
+	}
+	token := models.OnboardingToken{
+		OnboardingRecordID: record.ID,
+		Purpose:            models.PurposeStartPortal,
+		TokenHash:          hash,
+		ExpiresAt:          time.Now().Add(config.StartPortalTokenValidity),
+	}
+	if err := db.Create(&token).Error; err != nil {
+		return "", fmt.Errorf("failed to save token: %w", err)
+	}
+	return raw, nil
+}
+
+// sendStartOnboardingEmailAsync fires the "start your onboarding" email in
+// the background. Call only once the token (and, for a new record, the
+// record itself) is durably committed — see the ordering note at Notify's
+// call site.
+func sendStartOnboardingEmailAsync(cfg *config.Config, backend *backendclient.Client, record *models.OnboardingRecord, rawToken string) {
 	go func() {
-		startLink := h.cfg.PortalBaseURL + "/start?token=" + raw
-		body := "Hi " + req.FirstName + ",\n\n" +
+		startLink := cfg.PortalBaseURL + "/start?token=" + rawToken
+		body := "Hi " + record.FirstName + ",\n\n" +
 			"Congratulations on being accepted to KTH AI Society!\n\n" +
 			"To get started:\n" +
 			"1. Click the button below to open the onboarding portal\n" +
 			"2. Enter your kth.se email address\n" +
 			"3. Confirm your kth.se address via the link we send you\n" +
 			"4. We'll set up your kthais.com account and Mattermost access and email you the details"
-		if err := h.backend.SendEmail(req.PersonalEmail, "Welcome to KTH AI Society", body, startLink, "Start onboarding"); err != nil {
-			log.Printf("notify: failed to send start-portal email for %s: %v", logID(req.ApplicationID), err)
+		if err := backend.SendEmail(record.PersonalEmail, "Welcome to KTH AI Society", body, startLink, "Start onboarding"); err != nil {
+			log.Printf("start-onboarding email: failed to send for record %d: %v", record.ID, err)
 		}
 	}()
-
-	c.JSON(http.StatusOK, record)
 }

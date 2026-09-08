@@ -104,7 +104,7 @@ func main() {
 	api := r.Group("/")
 	handlers.NewNotifyHandler(db, cfg, backend).Register(api)
 	handlers.NewPortalHandler(db, cfg, backend, provisioningService).Register(api)
-	handlers.NewRetryHandler(db, cfg, provisioningService).Register(api)
+	handlers.NewRecordActionsHandler(db, cfg, backend, provisioningService).Register(api)
 	handlers.NewRecordsHandler(db, cfg).Register(api)
 
 	addr := cfg.Host + ":" + cfg.Port

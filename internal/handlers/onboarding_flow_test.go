@@ -118,7 +118,7 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 	api := engine.Group("/")
 	NewNotifyHandler(db, cfg, backend).Register(api)
 	NewPortalHandler(db, cfg, backend, provisioningService).Register(api)
-	NewRetryHandler(db, cfg, provisioningService).Register(api)
+	NewRecordActionsHandler(db, cfg, backend, provisioningService).Register(api)
 	NewRecordsHandler(db, cfg).Register(api)
 
 	return engine, cfg, fake
@@ -446,5 +446,158 @@ func TestRetryProvisioningByRecordID(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &retried))
 		require.Equal(t, models.StateComplete, retried.State)
 		require.Equal(t, "ada.lovelace@kthais.com", retried.KthaisEmail)
+	})
+}
+
+func TestCancel(t *testing.T) {
+	engine, cfg, fake := newTestServer(t)
+
+	postJSON := func(path string, body map[string]any) *httptest.ResponseRecorder {
+		payload, err := json.Marshal(body)
+		require.NoError(t, err)
+		req := httptest.NewRequest("POST", path, strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	doJSON(t, engine, "POST", "/notify", map[string]string{
+		"first_name":     "Ada",
+		"last_name":      "Lovelace",
+		"personal_email": "ada@example.com",
+		"assigned_team":  "IT",
+	}, cfg.OnboardingServiceSecret)
+	require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
+	startToken := extractToken(t, fake.sentEmails[0]["button_url"])
+
+	// Fetch the record via the records endpoint rather than trusting the
+	// notify response body's shape here — simpler than threading it through.
+	listRec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, cfg.OnboardingServiceSecret)
+	var records []models.OnboardingRecord
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &records))
+	require.Len(t, records, 1)
+	recordID := records[0].ID
+
+	t.Run("cancelling an unknown record 404s", func(t *testing.T) {
+		rec := postJSON("/internal/onboarding/cancel", map[string]any{"id": uint(999999)})
+		require.Equal(t, http.StatusNotFound, rec.Code)
+	})
+
+	t.Run("cancel succeeds and invalidates the outstanding start-portal token", func(t *testing.T) {
+		rec := postJSON("/internal/onboarding/cancel", map[string]any{"id": recordID})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var cancelled models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &cancelled))
+		require.Equal(t, models.StateCancelled, cancelled.State)
+
+		submitRec := doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
+			"token": startToken, "kth_email": "ada@kth.se",
+		}, "")
+		require.Equal(t, http.StatusNotFound, submitRec.Code, "the old start-portal token must no longer work")
+	})
+
+	t.Run("cancelling an already-cancelled record is rejected", func(t *testing.T) {
+		rec := postJSON("/internal/onboarding/cancel", map[string]any{"id": recordID})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+}
+
+func TestRestart(t *testing.T) {
+	engine, cfg, fake := newTestServer(t)
+
+	postJSON := func(path string, body map[string]any) *httptest.ResponseRecorder {
+		payload, err := json.Marshal(body)
+		require.NoError(t, err)
+		req := httptest.NewRequest("POST", path, strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("restarting a complete record is rejected", func(t *testing.T) {
+		doJSON(t, engine, "POST", "/notify", map[string]string{
+			"first_name":     "Grace",
+			"last_name":      "Hopper",
+			"personal_email": "grace@example.com",
+			"assigned_team":  "Development",
+		}, cfg.OnboardingServiceSecret)
+		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
+		graceStartToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+
+		doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
+			"token": graceStartToken, "kth_email": "grace@kth.se",
+		}, "")
+		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
+		graceConfirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+
+		confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": graceConfirmToken}, "")
+		var complete models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(confirmRec.Body.Bytes(), &complete))
+		require.Equal(t, models.StateComplete, complete.State)
+
+		rec := postJSON("/internal/onboarding/restart", map[string]any{"id": complete.ID})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	// Grace's completed flow synchronously sent two more emails beyond the
+	// portal ones (account-info + Mattermost getting-started, from
+	// sendFinalEmails) — baseline off the count as it now stands rather
+	// than assuming an exact total.
+	baseline := len(fake.sentEmails)
+
+	doJSON(t, engine, "POST", "/notify", map[string]string{
+		"first_name":     "Ada",
+		"last_name":      "Lovelace",
+		"personal_email": "ada@example.com",
+		"assigned_team":  "IT",
+	}, cfg.OnboardingServiceSecret)
+	require.Eventually(t, func() bool { return len(fake.sentEmails) >= baseline+1 }, waitFor, tick)
+	startToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+
+	doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
+		"token": startToken, "kth_email": "ada@kth.se",
+	}, "")
+	require.Eventually(t, func() bool { return len(fake.sentEmails) >= baseline+2 }, waitFor, tick)
+	confirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+
+	// Google succeeds (so KthaisEmail gets set) but Mattermost fails, so the
+	// record ends up StateFailed with a real KthaisEmail already on it —
+	// exactly the case restart must not clobber.
+	fake.mattermostFail = true
+	confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
+	var failed models.OnboardingRecord
+	require.NoError(t, json.Unmarshal(confirmRec.Body.Bytes(), &failed))
+	require.Equal(t, models.StateFailed, failed.State)
+	require.Equal(t, "ada.lovelace@kthais.com", failed.KthaisEmail)
+
+	emailsBeforeRestart := len(fake.sentEmails)
+
+	rec := postJSON("/internal/onboarding/restart", map[string]any{"id": failed.ID})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var restarted models.OnboardingRecord
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &restarted))
+	require.Equal(t, models.StateNotified, restarted.State)
+	require.Equal(t, "ada.lovelace@kthais.com", restarted.KthaisEmail, "an already-provisioned address must survive a restart")
+	require.Empty(t, restarted.FailureReason)
+
+	require.Eventually(t, func() bool { return len(fake.sentEmails) > emailsBeforeRestart }, waitFor, tick)
+
+	t.Run("the old confirm token no longer works after restart", func(t *testing.T) {
+		rec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
+		require.Equal(t, http.StatusNotFound, rec.Code)
+	})
+
+	t.Run("the new start-portal link works", func(t *testing.T) {
+		newStartToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+		rec := doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
+			"token": newStartToken, "kth_email": "ada@kth.se",
+		}, "")
+		require.Equal(t, http.StatusOK, rec.Code)
 	})
 }

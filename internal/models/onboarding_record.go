@@ -12,6 +12,12 @@ const (
 	StateEmailed           OnboardingState = "emailed"
 	StateComplete          OnboardingState = "complete"
 	StateFailed            OnboardingState = "failed"
+	// StateCancelled is a terminal, admin-initiated state — an operator
+	// decided this onboarding shouldn't proceed. Distinct from StateFailed:
+	// a failed record is something that went wrong and may need attention
+	// (surfaced as such in the admin records list); a cancelled one was a
+	// deliberate decision and should never be flagged for follow-up.
+	StateCancelled OnboardingState = "cancelled"
 )
 
 // OnboardingRecord tracks one accepted applicant through the onboarding
