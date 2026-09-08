@@ -10,11 +10,41 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"onboarding-service/internal/config"
 )
+
+// mattermostErrorBody is the shape of Mattermost's own JSON error responses
+// (e.g. {"id":"...","message":"...","status_code":400}) — read on any
+// non-2xx response so the real reason (not just the HTTP status) ends up
+// in FailureReason and this package's own logs, instead of just "returned
+// 400" with no way to tell why.
+type mattermostErrorBody struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
+}
+
+// describeError reads and summarizes a non-2xx Mattermost response body.
+// Bounded to 4KB — Mattermost's own error bodies are always small JSON, so
+// anything larger is almost certainly not one and not worth logging in
+// full.
+func describeError(resp *http.Response) string {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil || len(body) == 0 {
+		return ""
+	}
+	var parsed mattermostErrorBody
+	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != "" {
+		if parsed.ID != "" {
+			return fmt.Sprintf(" (%s: %s)", parsed.ID, parsed.Message)
+		}
+		return fmt.Sprintf(" (%s)", parsed.Message)
+	}
+	return fmt.Sprintf(" (%s)", string(body))
+}
 
 type Client struct {
 	baseURL    string
@@ -66,7 +96,7 @@ func (c *Client) InviteToTeam(email string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("mattermost returned %d inviting %s", resp.StatusCode, email)
+		return fmt.Errorf("mattermost returned %d inviting %s%s", resp.StatusCode, email, describeError(resp))
 	}
 	return nil
 }
@@ -87,7 +117,7 @@ func (c *Client) Ping() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("mattermost ping returned %d", resp.StatusCode)
+		return fmt.Errorf("mattermost ping returned %d%s", resp.StatusCode, describeError(resp))
 	}
 	return nil
 }

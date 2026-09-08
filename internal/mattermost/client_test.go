@@ -52,6 +52,26 @@ func TestInviteToTeamFailure(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestInviteToTeamFailureIncludesMattermostsOwnErrorMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"id":"api.team.invite_members.invalid_domain","message":"Invalid domain for invitation, valid domains are: kthais.com","status_code":400}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(&config.Config{
+		MattermostURL:      server.URL,
+		MattermostBotToken: "test-bot-token",
+		MattermostTeamID:   "team-123",
+	})
+
+	err := client.InviteToTeam("grace@kth.se")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Invalid domain for invitation")
+	require.Contains(t, err.Error(), "api.team.invite_members.invalid_domain")
+}
+
 func TestInviteToTeamMissingTeamID(t *testing.T) {
 	client := New(&config.Config{MattermostURL: "http://example.invalid", MattermostBotToken: "t"})
 	err := client.InviteToTeam("grace@kth.se")
