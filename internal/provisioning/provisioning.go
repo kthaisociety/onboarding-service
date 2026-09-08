@@ -11,6 +11,7 @@ import (
 	"log"
 
 	"onboarding-service/internal/backendclient"
+	"onboarding-service/internal/emailcontent"
 	"onboarding-service/internal/googleworkspace"
 	"onboarding-service/internal/mattermost"
 	"onboarding-service/internal/models"
@@ -159,22 +160,18 @@ func (s *Service) ensureAccount(ctx context.Context, record *models.OnboardingRe
 }
 
 func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword string) error {
-	accountBody := fmt.Sprintf(
-		"Hi %s,\n\n"+
-			"Here is your KTH AI Society account:\n"+
-			"1. Email: %s\n"+
-			"2. Temporary password: %s\n"+
-			"3. You'll be asked to set a new password the first time you log in",
-		record.FirstName, record.KthaisEmail, tempPassword,
-	)
-	if err := s.backend.SendEmail(record.KthEmail, "Your KTH AI Society account", accountBody, "", ""); err != nil {
+	settings, err := emailcontent.Load(s.db)
+	if err != nil {
+		log.Printf("sendFinalEmails: failed to load email settings for record %d, using defaults: %v", record.ID, err)
+	}
+
+	accountSubject, accountBody := emailcontent.BuildAccount(settings.AccountIntroText, record.FirstName, record.KthaisEmail, tempPassword)
+	if err := s.backend.SendEmail(record.KthEmail, accountSubject, accountBody, "", ""); err != nil {
 		return fmt.Errorf("account-info email: %w", err)
 	}
 
-	mattermostBody := "Hi " + record.FirstName + ",\n\n" +
-		"You've been invited to the KTH AI Society Mattermost workspace — check your inbox " +
-		"for an invite link to get started."
-	if err := s.backend.SendEmail(record.KthEmail, "Getting started with Mattermost", mattermostBody, "", ""); err != nil {
+	mattermostSubject, mattermostBody := emailcontent.BuildMattermost(settings.MattermostIntroText, record.FirstName)
+	if err := s.backend.SendEmail(record.KthEmail, mattermostSubject, mattermostBody, "", ""); err != nil {
 		return fmt.Errorf("mattermost getting-started email: %w", err)
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
+	"onboarding-service/internal/emailcontent"
 	"onboarding-service/internal/models"
 	"onboarding-service/internal/utils"
 
@@ -145,12 +146,12 @@ func issueStartPortalToken(db *gorm.DB, record *models.OnboardingRecord) (string
 // caller's own request.
 func sendStartOnboardingEmailAsync(db *gorm.DB, cfg *config.Config, backend *backendclient.Client, record *models.OnboardingRecord, rawToken string) {
 	go func() {
-		settings, err := loadEmailSettings(db)
+		settings, err := emailcontent.Load(db)
 		if err != nil {
 			log.Printf("start-onboarding email: failed to load email settings for record %d, using default: %v", record.ID, err)
 		}
 		startLink := cfg.PortalBaseURL + "/start?token=" + rawToken
-		subject, body := buildStartOnboardingEmail(settings.IntroText, record.FirstName)
+		subject, body := emailcontent.BuildStart(settings.StartIntroText, record.FirstName)
 		if err := backend.SendEmail(record.PersonalEmail, subject, body, startLink, "Start onboarding"); err != nil {
 			log.Printf("start-onboarding email: failed to send for record %d: %v", record.ID, err)
 		}
