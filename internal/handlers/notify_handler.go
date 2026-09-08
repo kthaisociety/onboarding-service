@@ -108,7 +108,7 @@ func (h *NotifyHandler) Notify(c *gin.Context) {
 	// Only after the transaction above has actually committed — the
 	// recipient could click the link before an earlier-fired goroutine's
 	// send even completes, let alone before the token it references exists.
-	sendStartOnboardingEmailAsync(h.cfg, h.backend, &record, raw)
+	sendStartOnboardingEmailAsync(h.db, h.cfg, h.backend, &record, raw)
 
 	c.JSON(http.StatusOK, record)
 }
@@ -139,18 +139,19 @@ func issueStartPortalToken(db *gorm.DB, record *models.OnboardingRecord) (string
 // sendStartOnboardingEmailAsync fires the "start your onboarding" email in
 // the background. Call only once the token (and, for a new record, the
 // record itself) is durably committed — see the ordering note at Notify's
-// call site.
-func sendStartOnboardingEmailAsync(cfg *config.Config, backend *backendclient.Client, record *models.OnboardingRecord, rawToken string) {
+// call site. The intro paragraph comes from whatever an admin has saved via
+// EmailSettingsHandler (falling back to a default if none has) — read fresh
+// here rather than passed in, since the goroutine may run well after the
+// caller's own request.
+func sendStartOnboardingEmailAsync(db *gorm.DB, cfg *config.Config, backend *backendclient.Client, record *models.OnboardingRecord, rawToken string) {
 	go func() {
+		settings, err := loadEmailSettings(db)
+		if err != nil {
+			log.Printf("start-onboarding email: failed to load email settings for record %d, using default: %v", record.ID, err)
+		}
 		startLink := cfg.PortalBaseURL + "/start?token=" + rawToken
-		body := "Hi " + record.FirstName + ",\n\n" +
-			"Congratulations on being accepted to KTH AI Society!\n\n" +
-			"To get started:\n" +
-			"1. Click the button below to open the onboarding portal\n" +
-			"2. Enter your kth.se email address\n" +
-			"3. Confirm your kth.se address via the link we send you\n" +
-			"4. We'll set up your kthais.com account and Mattermost access and email you the details"
-		if err := backend.SendEmail(record.PersonalEmail, "Welcome to KTH AI Society", body, startLink, "Start onboarding"); err != nil {
+		subject, body := buildStartOnboardingEmail(settings.IntroText, record.FirstName)
+		if err := backend.SendEmail(record.PersonalEmail, subject, body, startLink, "Start onboarding"); err != nil {
 			log.Printf("start-onboarding email: failed to send for record %d: %v", record.ID, err)
 		}
 	}()

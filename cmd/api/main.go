@@ -52,7 +52,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
-	if err := db.AutoMigrate(&models.OnboardingRecord{}, &models.OnboardingToken{}); err != nil {
+	if err := db.AutoMigrate(&models.OnboardingRecord{}, &models.OnboardingToken{}, &models.OnboardingEmailSettings{}); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
 	}
 
@@ -106,6 +106,7 @@ func main() {
 	handlers.NewPortalHandler(db, cfg, backend, provisioningService).Register(api)
 	handlers.NewRecordActionsHandler(db, cfg, backend, provisioningService).Register(api)
 	handlers.NewRecordsHandler(db, cfg).Register(api)
+	handlers.NewEmailSettingsHandler(db, cfg).Register(api)
 
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("onboarding-service listening on %s", addr)

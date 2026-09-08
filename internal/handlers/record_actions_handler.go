@@ -166,7 +166,7 @@ func (h *RecordActionsHandler) Restart(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "restarted, but failed to send a new email"})
 		return
 	}
-	sendStartOnboardingEmailAsync(h.cfg, h.backend, record, raw)
+	sendStartOnboardingEmailAsync(h.db, h.cfg, h.backend, record, raw)
 
 	c.JSON(http.StatusOK, record)
 }

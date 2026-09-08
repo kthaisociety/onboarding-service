@@ -107,7 +107,7 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.OnboardingRecord{}, &models.OnboardingToken{}))
+	require.NoError(t, db.AutoMigrate(&models.OnboardingRecord{}, &models.OnboardingToken{}, &models.OnboardingEmailSettings{}))
 
 	backend := backendclient.New(cfg)
 	mm := mattermost.New(cfg)
@@ -120,6 +120,7 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 	NewPortalHandler(db, cfg, backend, provisioningService).Register(api)
 	NewRecordActionsHandler(db, cfg, backend, provisioningService).Register(api)
 	NewRecordsHandler(db, cfg).Register(api)
+	NewEmailSettingsHandler(db, cfg).Register(api)
 
 	return engine, cfg, fake
 }
@@ -599,5 +600,74 @@ func TestRestart(t *testing.T) {
 			"token": newStartToken, "kth_email": "ada@kth.se",
 		}, "")
 		require.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
+func TestEmailSettings(t *testing.T) {
+	engine, cfg, fake := newTestServer(t)
+
+	get := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/internal/onboarding/email-settings", nil)
+		req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("missing secret is rejected", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/internal/onboarding/email-settings", nil)
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("defaults to the built-in intro before anything is saved", func(t *testing.T) {
+		rec := get()
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, defaultStartOnboardingIntro, body["intro_text"])
+	})
+
+	t.Run("preview reflects an unsaved draft, never what's actually saved", func(t *testing.T) {
+		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
+			"intro_text": "Hey {{first_name}}, welcome aboard!",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, startOnboardingSubject, body["subject"])
+		require.Contains(t, body["body"], "Hey "+previewFirstName+", welcome aboard!")
+
+		// Never persisted by the preview call.
+		getRec := get()
+		var settings map[string]string
+		require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &settings))
+		require.Equal(t, defaultStartOnboardingIntro, settings["intro_text"])
+	})
+
+	t.Run("saving takes effect for the next real send", func(t *testing.T) {
+		saveRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
+			"intro_text":       "Hi {{first_name}}, so glad you're joining us!",
+			"updated_by_email": "admin@kthais.com",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, saveRec.Code)
+		var saved map[string]string
+		require.NoError(t, json.Unmarshal(saveRec.Body.Bytes(), &saved))
+		require.Equal(t, "Hi {{first_name}}, so glad you're joining us!", saved["intro_text"])
+
+		emailsBefore := len(fake.sentEmails)
+		rec := doJSON(t, engine, "POST", "/notify", map[string]string{
+			"first_name":     "Margaret",
+			"last_name":      "Hamilton",
+			"personal_email": "margaret@example.com",
+			"assigned_team":  "IT",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		require.Eventually(t, func() bool { return len(fake.sentEmails) > emailsBefore }, waitFor, tick)
+		require.Contains(t, fake.sentEmails[len(fake.sentEmails)-1]["body"], "Hi Margaret, so glad you're joining us!")
+		// The fixed next-steps list is still appended after the custom intro.
+		require.Contains(t, fake.sentEmails[len(fake.sentEmails)-1]["body"], "To get started:")
 	})
 }
