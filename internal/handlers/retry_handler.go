@@ -15,11 +15,13 @@ import (
 )
 
 // RetryHandler exposes a manual recovery path for a record stuck in
-// StateFailed (e.g. the Google account was created but the Mattermost
-// invite failed) — a human-triggered re-run of the same idempotent
-// Provision() call used on the happy path, so a stuck record never requires
-// direct SQLite access. See onboarding-service-plan.md's retry-provisioning
-// section.
+// StateFailed (e.g. the Google account was created but a later step
+// failed) — a human-triggered re-run of the same idempotent Provision()
+// call used on the happy path, so a stuck record never requires direct
+// SQLite access. Identifies the record by application_id or by this
+// service's own record id (the latter for manual onboardings, which have
+// no application_id at all). See onboarding-service-plan.md's
+// retry-provisioning section.
 type RetryHandler struct {
 	db           *gorm.DB
 	cfg          *config.Config
@@ -34,20 +36,36 @@ func (h *RetryHandler) Register(r *gin.RouterGroup) {
 	r.POST("/internal/onboarding/retry-provisioning", requireServiceSecret(h.cfg), h.Retry)
 }
 
+// retryRequest identifies the record to retry one of two ways:
+// application_id for a record tied to a real backend application, or id
+// (this service's own record ID) for a manual onboarding — which has no
+// application_id to look up by at all (see models.OnboardingRecord's doc
+// comment on nullable ApplicationID).
 type retryRequest struct {
-	ApplicationID string `json:"application_id" binding:"required"`
+	ApplicationID string `json:"application_id"`
+	ID            uint   `json:"id"`
 }
 
 func (h *RetryHandler) Retry(c *gin.Context) {
 	var req retryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "application_id is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "application_id or id is required"})
 		return
 	}
 
 	var record models.OnboardingRecord
-	if err := h.db.Where("application_id = ?", req.ApplicationID).First(&record).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no onboarding record for that application"})
+	var err error
+	switch {
+	case req.ApplicationID != "":
+		err = h.db.Where("application_id = ?", req.ApplicationID).First(&record).Error
+	case req.ID != 0:
+		err = h.db.First(&record, req.ID).Error
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "application_id or id is required"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no matching onboarding record"})
 		return
 	}
 

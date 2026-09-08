@@ -391,3 +391,60 @@ func TestRecordsHandler(t *testing.T) {
 		require.Equal(t, "Grace", records[0].FirstName, "newest record should come first")
 	})
 }
+
+func TestRetryProvisioningByRecordID(t *testing.T) {
+	engine, cfg, fake := newTestServer(t)
+
+	// A manual onboarding has no application_id at all — this is the case
+	// retry-provisioning couldn't handle before this test was added.
+	doJSON(t, engine, "POST", "/notify", map[string]string{
+		"first_name":     "Ada",
+		"last_name":      "Lovelace",
+		"personal_email": "ada@example.com",
+		"assigned_team":  "IT",
+	}, cfg.OnboardingServiceSecret)
+	require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
+	startToken := extractToken(t, fake.sentEmails[0]["button_url"])
+
+	doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
+		"token": startToken, "kth_email": "ada@kth.se",
+	}, "")
+	require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
+	confirmToken := extractToken(t, fake.sentEmails[1]["button_url"])
+
+	fake.mattermostFail = true
+	confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
+	require.Equal(t, http.StatusOK, confirmRec.Code)
+
+	var failed models.OnboardingRecord
+	require.NoError(t, json.Unmarshal(confirmRec.Body.Bytes(), &failed))
+	require.Equal(t, models.StateFailed, failed.State)
+	require.Nil(t, failed.ApplicationID)
+
+	postJSON := func(body map[string]any) *httptest.ResponseRecorder {
+		payload, err := json.Marshal(body)
+		require.NoError(t, err)
+		req := httptest.NewRequest("POST", "/internal/onboarding/retry-provisioning", strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("retrying by application_id fails — there isn't one", func(t *testing.T) {
+		rec := postJSON(map[string]any{"application_id": ""})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("retrying by record id succeeds once the underlying problem is fixed", func(t *testing.T) {
+		fake.mattermostFail = false
+		rec := postJSON(map[string]any{"id": failed.ID})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var retried models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &retried))
+		require.Equal(t, models.StateComplete, retried.State)
+		require.Equal(t, "ada.lovelace@kthais.com", retried.KthaisEmail)
+	})
+}
