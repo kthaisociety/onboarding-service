@@ -45,9 +45,6 @@ func main() {
 	if cfg.MattermostBotToken == "" {
 		log.Fatal("MATTERMOST_BOT_TOKEN must be set")
 	}
-	if cfg.MattermostTeamID == "" {
-		log.Fatal("MATTERMOST_TEAM_ID must be set")
-	}
 
 	db, err := gorm.Open(sqlite.Open(cfg.DBPath), &gorm.Config{})
 	if err != nil {

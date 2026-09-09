@@ -41,6 +41,13 @@ const AccountSubject = "Your KTH AI Society account"
 const AccountButtonURL = "https://accounts.google.com/"
 const AccountButtonText = "Sign in with Google"
 
+// PasskeySetupURL is Google's own account-security page for managing
+// passkeys — mentioned as a plain-text link in BuildAccount's body (not a
+// second button; the template only has one button slot, reserved for
+// activating the account itself) since most email clients auto-linkify a
+// bare URL even without an anchor tag.
+const PasskeySetupURL = "https://myaccount.google.com/signinoptions/passkeys"
+
 const MattermostSubject = "Getting started with Mattermost"
 
 // MattermostButtonText labels the button that points at the Mattermost
@@ -103,7 +110,8 @@ func BuildAccount(introText, firstName, kthaisEmail, tempPassword string) (subje
 		"1. Email: " + kthaisEmail + "\n" +
 		"2. Temporary password: " + tempPassword + "\n" +
 		"3. You'll be asked to set a new password the first time you log in\n" +
-		"4. Click the button below to sign in with Google and activate your account"
+		"4. Click the button below to sign in with Google and activate your account\n" +
+		"5. Once signed in, we recommend setting up a passkey for faster, more secure sign-in at " + PasskeySetupURL
 	return AccountSubject, body
 }
 

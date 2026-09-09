@@ -73,12 +73,10 @@ type Config struct {
 	MattermostURL string
 	// MattermostBotToken authenticates as a dedicated bot account (not an
 	// admin personal access token — deliberate least-privilege choice, see
-	// onboarding-service-plan.md).
+	// onboarding-service-plan.md). Only used for offboarding
+	// (deactivate/delete) — there's no onboarding-side invite, since the
+	// KTHAIS team is open + restricted to the kthais.com email domain.
 	MattermostBotToken string
-	// MattermostTeamID is the KTHAIS team's id within the Mattermost
-	// instance — looked up from that instance, not derivable from anything
-	// else this service knows.
-	MattermostTeamID string
 }
 
 // StartPortalTokenValidity governs how long a "start your onboarding" link
@@ -106,7 +104,6 @@ func LoadConfig() *Config {
 		GoogleImpersonateAs:      getEnv("GOOGLE_ADMIN_IMPERSONATE_AS", ""),
 		MattermostURL:            strings.TrimSuffix(getEnv("MATTERMOST_URL", ""), "/"),
 		MattermostBotToken:       getEnv("MATTERMOST_BOT_TOKEN", ""),
-		MattermostTeamID:         getEnv("MATTERMOST_TEAM_ID", ""),
 	}
 	return cfg
 }

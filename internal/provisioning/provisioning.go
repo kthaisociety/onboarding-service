@@ -84,23 +84,13 @@ func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord
 		return fmt.Errorf("google group membership: %w", err)
 	}
 
-	// Invite the newly provisioned @kthais.com address, not KthEmail (the
-	// personal kth.se address only ever used to verify identity during the
-	// portal flow) — Mattermost's own domain restriction is scoped to real
-	// KTHAIS accounts, and that's the identity this person actually joins
-	// the workspace as.
-	//
-	// Deliberately non-fatal: this call's own email-invite delivery has
-	// proven unreliable (the API call can succeed while the notification
-	// email never arrives, and it has also failed outright with a 400 whose
-	// root cause is still unconfirmed), and the account/group-membership
-	// work above is real, useful progress that shouldn't be thrown away
-	// over Mattermost's own invite flow specifically. The getting-started
-	// email below no longer depends on this succeeding — it always links
-	// straight to the Mattermost server instead of promising an invite.
-	if err := s.mattermost.InviteToTeam(record.KthaisEmail); err != nil {
-		log.Printf("provisioning: record %d: mattermost invite failed, continuing without it: %v", record.ID, err)
-	}
+	// No explicit Mattermost invite call: the KTHAIS team is configured as
+	// open + restricted to the kthais.com email domain (confirmed in
+	// System Console), so anyone with the @kthais.com account just
+	// provisioned above can sign in and join on their own — an invite call
+	// would be redundant, and its own email delivery had proven unreliable
+	// anyway. The getting-started email below links straight to the
+	// Mattermost server instead.
 
 	if err := s.save(record, models.StateProvisioned); err != nil {
 		return err

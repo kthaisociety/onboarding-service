@@ -63,7 +63,6 @@ const (
 type fakeBackend struct {
 	sentEmails       []map[string]string
 	recordedAccounts []map[string]string
-	mattermostFail   bool
 	sendEmailFail    bool
 }
 
@@ -93,22 +92,17 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 	}))
 	t.Cleanup(backendServer.Close)
 
-	mmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if fake.mattermostFail {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(mmServer.Close)
-
+	// No fake Mattermost server: nothing in this flow calls Mattermost's API
+	// anymore (the KTHAIS team is open + kthais.com-domain-restricted, so
+	// there's no invite step — see provisioning.Service.Provision). The
+	// mattermost.Client built from MattermostURL is only ever asked for its
+	// BaseURL(), a local string, when composing the getting-started email.
 	cfg := &config.Config{
 		OnboardingServiceSecret: "test-onboarding-service-secret",
 		BackendURL:              backendServer.URL,
 		PortalBaseURL:           "https://kthais.com/onboarding",
-		MattermostURL:           mmServer.URL,
+		MattermostURL:           "https://chat.aisociety.se",
 		MattermostBotToken:      "test-bot-token",
-		MattermostTeamID:        "team-123",
 	}
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -670,10 +664,9 @@ func TestRestart(t *testing.T) {
 
 	// Google succeeds (so KthaisEmail gets set) but the final-emails step
 	// fails, so the record ends up StateFailed with a real KthaisEmail
-	// already on it — exactly the case restart must not clobber. (The
-	// Mattermost invite itself is deliberately non-fatal now — see
-	// provisioning.Service.Provision — so it can no longer be used to
-	// induce this state.)
+	// already on it — exactly the case restart must not clobber. (There's
+	// no Mattermost invite step anymore to induce this — see
+	// provisioning.Service.Provision.)
 	fake.sendEmailFail = true
 	confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 	var failed models.OnboardingRecord

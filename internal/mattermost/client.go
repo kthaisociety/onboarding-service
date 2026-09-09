@@ -1,6 +1,9 @@
-// Package mattermost invites new members to the KTHAIS Mattermost team,
-// and — the offboarding half — deactivates or deletes their account later.
-// Hand-rolled net/http rather than the official Mattermost SDK: this
+// Package mattermost deactivates or deletes a member's Mattermost account on
+// offboarding (there's no explicit onboarding-side invite: the KTHAIS team
+// is open + restricted to the kthais.com email domain, so a newly
+// provisioned account can just sign in on its own — see
+// provisioning.Service.Provision). Hand-rolled net/http rather than the
+// official Mattermost SDK: this
 // service only ever needs a handful of REST calls, which doesn't justify
 // pulling in the full server-model dependency tree — and a plain net/http
 // client stays fakeable with httptest.Server, matching the pattern already
@@ -8,7 +11,6 @@
 package mattermost
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,7 +53,6 @@ func describeError(resp *http.Response) string {
 type Client struct {
 	baseURL    string
 	botToken   string
-	teamID     string
 	httpClient *http.Client
 }
 
@@ -59,7 +60,6 @@ func New(cfg *config.Config) *Client {
 	return &Client{
 		baseURL:    cfg.MattermostURL,
 		botToken:   cfg.MattermostBotToken,
-		teamID:     cfg.MattermostTeamID,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -69,45 +69,6 @@ func New(cfg *config.Config) *Client {
 // duplicating MATTERMOST_URL through another path.
 func (c *Client) BaseURL() string {
 	return c.baseURL
-}
-
-// InviteToTeam invites email to the configured team via Mattermost's
-// standard email-invite mechanism. This works regardless of the instance's
-// eventual sign-in method (password or SSO) — the invite just gets the
-// address onto the team's allowed list and sends a join link.
-//
-// FLAG (per onboarding-service-plan.md, unverified as of this writing):
-// confirm this is actually how Sam's Mattermost instance is configured, and
-// that the bot account has team-level invite permission, before relying on
-// this in production — see the plan doc's Mattermost section.
-func (c *Client) InviteToTeam(email string) error {
-	if c.teamID == "" {
-		return fmt.Errorf("MATTERMOST_TEAM_ID is not configured")
-	}
-
-	payload, err := json.Marshal([]string{email})
-	if err != nil {
-		return fmt.Errorf("failed to marshal invite request: %w", err)
-	}
-
-	path := fmt.Sprintf("/api/v4/teams/%s/invite/email", c.teamID)
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("failed to build invite request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("invite request for %s failed: %w", email, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("mattermost returned %d inviting %s%s", resp.StatusCode, email, describeError(resp))
-	}
-	return nil
 }
 
 // mattermostUser is the subset of Mattermost's User object this package

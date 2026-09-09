@@ -66,14 +66,16 @@ func (f *fakeGoogle) AddToGroup(ctx context.Context, groupEmail, memberEmail str
 	return nil
 }
 
-// testHarness wires a Service against fakeGoogle plus httptest.Server fakes
-// for Mattermost and the backend, following the same fake-at-the-HTTP-layer
-// pattern already used for backendclient in the handlers package tests.
+// testHarness wires a Service against fakeGoogle plus an httptest.Server
+// fake for the backend, following the same fake-at-the-HTTP-layer pattern
+// already used for backendclient in the handlers package tests. No fake
+// Mattermost server: Provision no longer makes any Mattermost API call (the
+// KTHAIS team is open + kthais.com-domain-restricted, so there's nothing to
+// invite) — the mattermost.Client passed to NewService is only ever asked
+// for its BaseURL(), a local string, in sendFinalEmails.
 type testHarness struct {
 	service           *Service
 	google            *fakeGoogle
-	failMattermost    bool
-	invitedEmails     []string
 	sentEmails        []map[string]string
 	recordedAccounts  []map[string]string
 	failRecordAccount bool
@@ -82,18 +84,6 @@ type testHarness struct {
 func newTestHarness(t *testing.T) *testHarness {
 	t.Helper()
 	h := &testHarness{google: newFakeGoogle()}
-
-	mmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.failMattermost {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		var body []string
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		h.invitedEmails = append(h.invitedEmails, body...)
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(mmServer.Close)
 
 	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -120,9 +110,8 @@ func newTestHarness(t *testing.T) *testHarness {
 	cfg := &config.Config{
 		OnboardingServiceSecret: "test-secret",
 		BackendURL:              backendServer.URL,
-		MattermostURL:           mmServer.URL,
+		MattermostURL:           "https://chat.aisociety.se",
 		MattermostBotToken:      "test-bot-token",
-		MattermostTeamID:        "team-123",
 	}
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -200,7 +189,6 @@ func TestProvisionHappyPath(t *testing.T) {
 	require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
 	require.Equal(t, 1, h.google.createCalls)
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.google.groupMembers["development@kthais.com"])
-	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.invitedEmails, "the Mattermost invite must go to the new @kthais.com address, not the personal kth.se one")
 	require.Len(t, h.sentEmails, 2)
 	require.Len(t, h.recordedAccounts, 1)
 	require.Equal(t, "grace.hopper@kthais.com", h.recordedAccounts[0]["kthais_email"])
@@ -218,10 +206,9 @@ func TestProvisionUnknownTeamFailsWithoutExternalCalls(t *testing.T) {
 	require.Equal(t, models.StateFailed, record.State)
 	require.NotEmpty(t, record.FailureReason)
 	require.Equal(t, 0, h.google.createCalls)
-	require.Empty(t, h.invitedEmails)
 }
 
-func TestProvisionGoogleFailureStopsBeforeMattermost(t *testing.T) {
+func TestProvisionGoogleFailureFailsEarly(t *testing.T) {
 	h := newTestHarness(t)
 	h.google.failCreate = true
 	record := newTestRecord(h.service.db, t)
@@ -231,29 +218,7 @@ func TestProvisionGoogleFailureStopsBeforeMattermost(t *testing.T) {
 
 	require.Equal(t, models.StateFailed, record.State)
 	require.Empty(t, record.KthaisEmail)
-	require.Empty(t, h.invitedEmails, "mattermost should never be called if the google step failed")
-}
-
-// TestProvisionMattermostFailureDoesNotBlockCompletion covers the
-// deliberate design in Provision: the Mattermost invite call is
-// best-effort, not fatal, because its own email delivery has proven
-// unreliable in practice and the getting-started email no longer depends on
-// it succeeding (it always links straight to the Mattermost server — see
-// emailcontent.DefaultMattermostIntro). A Mattermost hiccup must not throw
-// away the real, useful Google provisioning work already done.
-func TestProvisionMattermostFailureDoesNotBlockCompletion(t *testing.T) {
-	h := newTestHarness(t)
-	h.failMattermost = true
-	record := newTestRecord(h.service.db, t)
-
-	err := h.service.Provision(context.Background(), record)
-	require.NoError(t, err)
-
-	require.Equal(t, models.StateComplete, record.State)
-	require.NotEmpty(t, record.KthaisEmail, "the google account should have been created before mattermost failed")
-	require.Equal(t, 1, h.google.createCalls)
-	require.Empty(t, h.invitedEmails, "the failed invite call never registered on the fake mattermost server")
-	require.Len(t, h.sentEmails, 2, "final emails must still send even when the mattermost invite fails")
+	require.Empty(t, h.sentEmails, "final emails should never send if the google step failed")
 }
 
 func TestProvisionRetryAfterGoogleFailureReachesComplete(t *testing.T) {
@@ -274,7 +239,6 @@ func TestProvisionRetryAfterGoogleFailureReachesComplete(t *testing.T) {
 
 	require.Equal(t, models.StateComplete, record.State)
 	require.Equal(t, 1, h.google.createCalls)
-	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.invitedEmails)
 }
 
 // TestProvisionRetryAfterAccountDeletedExternallyRecreatesIt covers a real
