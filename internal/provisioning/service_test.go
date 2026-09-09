@@ -127,7 +127,14 @@ func newTestHarness(t *testing.T) *testHarness {
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.OnboardingRecord{}, &models.OnboardingToken{}))
+	// ":memory:" gives every pooled connection its own separate database —
+	// pinned to one connection so every query (including sendFinalEmails'
+	// own settings lookup) sees the same AutoMigrate. See the same fix in
+	// internal/handlers/onboarding_flow_test.go for the full explanation.
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	require.NoError(t, db.AutoMigrate(&models.OnboardingRecord{}, &models.OnboardingToken{}, &models.OnboardingEmailSettings{}))
 
 	backend := backendclient.New(cfg)
 	mm := mattermost.New(cfg)
@@ -261,4 +268,36 @@ func TestProvisionRetryAfterPartialFailureReachesComplete(t *testing.T) {
 	require.Equal(t, 1, h.google.createCalls, "retry must not re-create the google account")
 	require.Equal(t, 1, h.google.resetCalls, "retry mints a fresh temp password instead of reusing the original")
 	require.Equal(t, []string{"grace@kth.se"}, h.invitedEmails)
+}
+
+// TestProvisionRetryAfterAccountDeletedExternallyRecreatesIt covers a real
+// production case: an admin restarted a record (which deliberately preserves
+// KthaisEmail — see RecordActionsHandler.Restart) after also manually
+// deleting the Google account itself (e.g. to reset a test user). The
+// account no longer existing must not be treated as fatal — it must be
+// recreated at the same address, not error out with no recovery path.
+func TestProvisionRetryAfterAccountDeletedExternallyRecreatesIt(t *testing.T) {
+	h := newTestHarness(t)
+	record := newTestRecord(h.service.db, t)
+
+	err := h.service.Provision(context.Background(), record)
+	require.NoError(t, err)
+	require.Equal(t, models.StateComplete, record.State)
+	require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
+	require.Equal(t, 1, h.google.createCalls)
+
+	// Simulate an admin deleting the account directly in Workspace, then
+	// restarting the record (which resets state but keeps KthaisEmail —
+	// see models.OnboardingRecord and RecordActionsHandler.Restart).
+	delete(h.google.users, "grace.hopper@kthais.com")
+	record.State = models.StateKthEmailConfirmed
+	record.FailureReason = ""
+	require.NoError(t, h.service.db.Save(record).Error)
+
+	err = h.service.Provision(context.Background(), record)
+	require.NoError(t, err)
+
+	require.Equal(t, models.StateComplete, record.State)
+	require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail, "must recreate at the same reserved address, not mint a numbered duplicate")
+	require.Equal(t, 2, h.google.createCalls, "the missing account must be recreated, not treated as a fatal error")
 }

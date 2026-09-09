@@ -114,47 +114,60 @@ func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord
 }
 
 // ensureAccount creates the Google account on first run. On a retry (record
-// already has a KthaisEmail from a prior partial failure), it confirms the
-// account still exists and resets its password rather than trying to
-// recover the original temp password — that password is never persisted
-// anywhere, so a retry always mints a fresh one. This trades one harmless
-// extra password reset for never writing a live credential to disk.
+// already has a KthaisEmail from a prior partial failure) where the account
+// still exists, it resets its password rather than trying to recover the
+// original temp password — that password is never persisted anywhere, so a
+// retry always mints a fresh one. This trades one harmless extra password
+// reset for never writing a live credential to disk.
+//
+// If the account no longer exists — most likely deleted directly in
+// Workspace, e.g. to reset a test user for another run — it's recreated at
+// the same address rather than treated as fatal: KthaisEmail is already
+// reserved for this record, so re-creating there is safe and, unlike
+// resolving a fresh address, can never mint a numbered-suffix duplicate
+// (erik.svensson2@...) just because the original name is still "taken" by
+// this same record's own (stale) expectation.
 func (s *Service) ensureAccount(ctx context.Context, record *models.OnboardingRecord) (tempPassword string, err error) {
 	tempPassword, err = utils.GenerateTempPassword()
 	if err != nil {
 		return "", err
 	}
 
-	if record.KthaisEmail == "" {
-		email, err := googleworkspace.ResolvePrimaryEmail(ctx, s.google, PrimaryDomain, record.FirstName, record.LastName)
+	if record.KthaisEmail != "" {
+		exists, err := s.google.UserExists(ctx, record.KthaisEmail)
 		if err != nil {
 			return "", err
 		}
-		if err := s.google.CreateUser(ctx, googleworkspace.NewUser{
-			PrimaryEmail:  email,
-			FirstName:     record.FirstName,
-			LastName:      record.LastName,
-			RecoveryEmail: record.KthEmail,
-			TempPassword:  tempPassword,
-		}); err != nil {
+		if exists {
+			if err := s.google.ResetPassword(ctx, record.KthaisEmail, tempPassword); err != nil {
+				return "", err
+			}
+			return tempPassword, nil
+		}
+		// Falls through to create it fresh at record.KthaisEmail below.
+	}
+
+	email := record.KthaisEmail
+	if email == "" {
+		email, err = googleworkspace.ResolvePrimaryEmail(ctx, s.google, PrimaryDomain, record.FirstName, record.LastName)
+		if err != nil {
 			return "", err
 		}
+	}
+	if err := s.google.CreateUser(ctx, googleworkspace.NewUser{
+		PrimaryEmail:  email,
+		FirstName:     record.FirstName,
+		LastName:      record.LastName,
+		RecoveryEmail: record.KthEmail,
+		TempPassword:  tempPassword,
+	}); err != nil {
+		return "", err
+	}
+	if record.KthaisEmail == "" {
 		record.KthaisEmail = email
 		if err := s.db.Model(record).Update("kthais_email", email).Error; err != nil {
 			return "", err
 		}
-		return tempPassword, nil
-	}
-
-	exists, err := s.google.UserExists(ctx, record.KthaisEmail)
-	if err != nil {
-		return "", err
-	}
-	if !exists {
-		return "", fmt.Errorf("account %s was created on a prior attempt but no longer exists", record.KthaisEmail)
-	}
-	if err := s.google.ResetPassword(ctx, record.KthaisEmail, tempPassword); err != nil {
-		return "", err
 	}
 	return tempPassword, nil
 }
