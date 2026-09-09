@@ -33,7 +33,14 @@ const DefaultStartIntro = "Congratulations on being accepted to KTH AI Society!"
 const AccountSubject = "Your KTH AI Society account"
 
 const MattermostSubject = "Getting started with Mattermost"
-const DefaultMattermostIntro = "You've been invited to the KTH AI Society Mattermost workspace — check your inbox for an invite link to get started."
+
+// DefaultMattermostIntro deliberately says "kthais.com inbox", not just
+// "your inbox": this email is sent to the kth.se address (the only inbox
+// reachable before the account-credentials email above gives them
+// kthais.com access), but the Mattermost invite itself goes to the new
+// @kthais.com address (see provisioning.Provision) — saying just "your
+// inbox" here would point them at the wrong mailbox.
+const DefaultMattermostIntro = "You've been invited to the KTH AI Society Mattermost workspace — check your new @kthais.com inbox for an invite link to get started."
 
 // substitute replaces the one placeholder admin-edited intro text may
 // contain — plain string substitution, never executed as a template, since
