@@ -117,8 +117,17 @@ func (h *PortalHandler) SubmitEmail(c *gin.Context) {
 	go func() {
 		confirmLink := h.cfg.PortalBaseURL + "/confirm?token=" + raw
 		body := "Hi " + record.FirstName + ",\n\n" +
-			"Please confirm this is your KTH email address to continue setting up your KTH AI Society account."
-		if err := h.backend.SendEmail(kthEmail, "Confirm your KTH email", body, confirmLink, "Confirm this is me"); err != nil {
+			"Please confirm this is your KTH email address to continue setting up your KTH AI Society account.\n\n" +
+			"Click below, then confirm once more on the page that opens — that extra click keeps your account " +
+			"safe from automated email link scanners."
+		// Deliberately not "Confirm this is me" here too: this link is only
+		// ever a GET navigation (email clients strip JS/forms, so nothing in
+		// the email itself can perform the real confirm), and KTH's mail
+		// prefetches links (Safe Links or equivalent) — see
+		// ConfirmOnboarding's own comment for the other half of this. Using
+		// identical wording on both buttons made the flow look like a
+		// broken duplicate rather than two intentional steps.
+		if err := h.backend.SendEmail(kthEmail, "Confirm your KTH email", body, confirmLink, "Continue to confirm"); err != nil {
 			log.Printf("submit-email: failed to send confirmation email for record %d: %v", record.ID, err)
 		}
 	}()
