@@ -279,6 +279,28 @@ func TestPortalFlow(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, rec.Code)
 	})
 
+	t.Run("confirm info shows who the link is for, without consuming it", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/portal/confirm?token="+confirmToken, nil)
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var info struct {
+			FirstName string `json:"first_name"`
+			KthEmail  string `json:"kth_email"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
+		require.Equal(t, "Grace", info.FirstName)
+		require.Equal(t, "grace@kth.se", info.KthEmail)
+
+		// The token must still be valid afterwards — a GET (including a
+		// mail scanner's prefetch) must never consume it.
+		badToken := httptest.NewRequest("GET", "/portal/confirm?token=bogus", nil)
+		badRec := httptest.NewRecorder()
+		engine.ServeHTTP(badRec, badToken)
+		require.Equal(t, http.StatusNotFound, badRec.Code)
+	})
+
 	t.Run("confirming runs provisioning through to complete", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 		require.Equal(t, http.StatusOK, rec.Code)

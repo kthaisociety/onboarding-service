@@ -40,6 +40,7 @@ func (h *PortalHandler) Register(r *gin.RouterGroup) {
 	portal := r.Group("/portal")
 	{
 		portal.POST("/submit-email", h.SubmitEmail)
+		portal.GET("/confirm", h.ConfirmInfo)
 		portal.POST("/confirm", h.Confirm)
 	}
 }
@@ -133,6 +134,32 @@ func (h *PortalHandler) SubmitEmail(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, record)
+}
+
+// ConfirmInfo returns the identity a confirm_kth_email token belongs to,
+// without consuming it — purely so the confirm page can show who it's for
+// (e.g. "I confirm that alex@kth.se is my own email address") before the
+// real action happens. Safe to call any number of times, including by a
+// mail scanner prefetching the link's GET, since it never changes state —
+// unlike Confirm below, which is the actual action and must stay
+// POST-only.
+func (h *PortalHandler) ConfirmInfo(c *gin.Context) {
+	token, err := lookupToken(h.db, models.PurposeConfirmKthEmail, c.Query("token"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, invalidLinkError)
+		return
+	}
+
+	var record models.OnboardingRecord
+	if err := h.db.First(&record, token.OnboardingRecordID).Error; err != nil {
+		c.JSON(http.StatusNotFound, invalidLinkError)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"first_name": record.FirstName,
+		"kth_email":  record.KthEmail,
+	})
 }
 
 type confirmRequest struct {
