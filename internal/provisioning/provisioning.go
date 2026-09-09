@@ -84,7 +84,12 @@ func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord
 		return fmt.Errorf("google group membership: %w", err)
 	}
 
-	if err := s.mattermost.InviteToTeam(record.KthEmail); err != nil {
+	// Invite the newly provisioned @kthais.com address, not KthEmail (the
+	// personal kth.se address only ever used to verify identity during the
+	// portal flow) — Mattermost's own domain restriction is scoped to real
+	// KTHAIS accounts, and that's the identity this person actually joins
+	// the workspace as.
+	if err := s.mattermost.InviteToTeam(record.KthaisEmail); err != nil {
 		return fmt.Errorf("mattermost invite: %w", err)
 	}
 

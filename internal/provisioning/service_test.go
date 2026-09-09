@@ -200,7 +200,7 @@ func TestProvisionHappyPath(t *testing.T) {
 	require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
 	require.Equal(t, 1, h.google.createCalls)
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.google.groupMembers["development@kthais.com"])
-	require.Equal(t, []string{"grace@kth.se"}, h.invitedEmails)
+	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.invitedEmails, "the Mattermost invite must go to the new @kthais.com address, not the personal kth.se one")
 	require.Len(t, h.sentEmails, 2)
 	require.Len(t, h.recordedAccounts, 1)
 	require.Equal(t, "grace.hopper@kthais.com", h.recordedAccounts[0]["kthais_email"])
@@ -267,7 +267,7 @@ func TestProvisionRetryAfterPartialFailureReachesComplete(t *testing.T) {
 	require.Equal(t, models.StateComplete, record.State)
 	require.Equal(t, 1, h.google.createCalls, "retry must not re-create the google account")
 	require.Equal(t, 1, h.google.resetCalls, "retry mints a fresh temp password instead of reusing the original")
-	require.Equal(t, []string{"grace@kth.se"}, h.invitedEmails)
+	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.invitedEmails)
 }
 
 // TestProvisionRetryAfterAccountDeletedExternallyRecreatesIt covers a real
