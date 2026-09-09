@@ -89,8 +89,17 @@ func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord
 	// portal flow) — Mattermost's own domain restriction is scoped to real
 	// KTHAIS accounts, and that's the identity this person actually joins
 	// the workspace as.
+	//
+	// Deliberately non-fatal: this call's own email-invite delivery has
+	// proven unreliable (the API call can succeed while the notification
+	// email never arrives, and it has also failed outright with a 400 whose
+	// root cause is still unconfirmed), and the account/group-membership
+	// work above is real, useful progress that shouldn't be thrown away
+	// over Mattermost's own invite flow specifically. The getting-started
+	// email below no longer depends on this succeeding — it always links
+	// straight to the Mattermost server instead of promising an invite.
 	if err := s.mattermost.InviteToTeam(record.KthaisEmail); err != nil {
-		return fmt.Errorf("mattermost invite: %w", err)
+		log.Printf("provisioning: record %d: mattermost invite failed, continuing without it: %v", record.ID, err)
 	}
 
 	if err := s.save(record, models.StateProvisioned); err != nil {
@@ -184,12 +193,12 @@ func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword 
 	}
 
 	accountSubject, accountBody := emailcontent.BuildAccount(settings.AccountIntroText, record.FirstName, record.KthaisEmail, tempPassword)
-	if err := s.backend.SendEmail(record.KthEmail, accountSubject, accountBody, "", ""); err != nil {
+	if err := s.backend.SendEmail(record.KthEmail, accountSubject, accountBody, emailcontent.AccountButtonURL, emailcontent.AccountButtonText); err != nil {
 		return fmt.Errorf("account-info email: %w", err)
 	}
 
 	mattermostSubject, mattermostBody := emailcontent.BuildMattermost(settings.MattermostIntroText, record.FirstName)
-	if err := s.backend.SendEmail(record.KthEmail, mattermostSubject, mattermostBody, "", ""); err != nil {
+	if err := s.backend.SendEmail(record.KthEmail, mattermostSubject, mattermostBody, s.mattermost.BaseURL(), emailcontent.MattermostButtonText); err != nil {
 		return fmt.Errorf("mattermost getting-started email: %w", err)
 	}
 

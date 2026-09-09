@@ -64,6 +64,13 @@ func New(cfg *config.Config) *Client {
 	}
 }
 
+// BaseURL returns the configured Mattermost server URL, so callers (the
+// Mattermost getting-started email) can link straight to it without
+// duplicating MATTERMOST_URL through another path.
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // InviteToTeam invites email to the configured team via Mattermost's
 // standard email-invite mechanism. This works regardless of the instance's
 // eventual sign-in method (password or SSO) — the invite just gets the

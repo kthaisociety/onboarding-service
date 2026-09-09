@@ -32,15 +32,32 @@ const DefaultStartIntro = "Congratulations on being accepted to KTH AI Society!"
 
 const AccountSubject = "Your KTH AI Society account"
 
+// AccountButtonURL/AccountButtonText take the recipient straight to Google's
+// sign-in flow so they can activate the new account, rather than the
+// generic "Contact us" fallback every other onboarding email gets. Not
+// admin-editable — same reasoning as the credentials list in BuildAccount
+// below, this is something every recipient needs regardless of what an
+// admin's intro text says.
+const AccountButtonURL = "https://accounts.google.com/"
+const AccountButtonText = "Sign in with Google"
+
 const MattermostSubject = "Getting started with Mattermost"
 
-// DefaultMattermostIntro deliberately says "kthais.com inbox", not just
-// "your inbox": this email is sent to the kth.se address (the only inbox
-// reachable before the account-credentials email above gives them
-// kthais.com access), but the Mattermost invite itself goes to the new
-// @kthais.com address (see provisioning.Provision) — saying just "your
-// inbox" here would point them at the wrong mailbox.
-const DefaultMattermostIntro = "You've been invited to the KTH AI Society Mattermost workspace — check your new @kthais.com inbox for an invite link to get started."
+// MattermostButtonText labels the button that points at the Mattermost
+// server itself (provisioning.Service passes the actual URL, since that's
+// already the configured MattermostURL — no need to duplicate it here).
+const MattermostButtonText = "Open Mattermost"
+
+// DefaultMattermostIntro deliberately does not promise an invite email:
+// Mattermost's own email-invite delivery has proven unreliable in practice
+// (the "mattermost invite" API call can succeed while the notification
+// email itself never arrives), so this points the recipient straight at the
+// server instead of telling them to wait for something that may not show
+// up. Says "kthais.com account", not "your account": this email is sent to
+// the kth.se address (the only inbox reachable before the
+// account-credentials email above gives them kthais.com access), but the
+// sign-in identity is the new @kthais.com address.
+const DefaultMattermostIntro = "You've been added to the KTH AI Society Mattermost workspace. Click the button below and sign in with your new @kthais.com account to get started."
 
 // substitute replaces the one placeholder admin-edited intro text may
 // contain — plain string substitution, never executed as a template, since
@@ -85,7 +102,8 @@ func BuildAccount(introText, firstName, kthaisEmail, tempPassword string) (subje
 		"Here is your KTH AI Society account:\n" +
 		"1. Email: " + kthaisEmail + "\n" +
 		"2. Temporary password: " + tempPassword + "\n" +
-		"3. You'll be asked to set a new password the first time you log in"
+		"3. You'll be asked to set a new password the first time you log in\n" +
+		"4. Click the button below to sign in with Google and activate your account"
 	return AccountSubject, body
 }
 

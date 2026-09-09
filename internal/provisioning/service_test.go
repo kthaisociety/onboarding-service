@@ -234,39 +234,46 @@ func TestProvisionGoogleFailureStopsBeforeMattermost(t *testing.T) {
 	require.Empty(t, h.invitedEmails, "mattermost should never be called if the google step failed")
 }
 
-func TestProvisionMattermostFailureAfterGoogleSucceeds(t *testing.T) {
+// TestProvisionMattermostFailureDoesNotBlockCompletion covers the
+// deliberate design in Provision: the Mattermost invite call is
+// best-effort, not fatal, because its own email delivery has proven
+// unreliable in practice and the getting-started email no longer depends on
+// it succeeding (it always links straight to the Mattermost server — see
+// emailcontent.DefaultMattermostIntro). A Mattermost hiccup must not throw
+// away the real, useful Google provisioning work already done.
+func TestProvisionMattermostFailureDoesNotBlockCompletion(t *testing.T) {
 	h := newTestHarness(t)
 	h.failMattermost = true
 	record := newTestRecord(h.service.db, t)
 
 	err := h.service.Provision(context.Background(), record)
-	require.Error(t, err)
+	require.NoError(t, err)
 
-	require.Equal(t, models.StateFailed, record.State)
+	require.Equal(t, models.StateComplete, record.State)
 	require.NotEmpty(t, record.KthaisEmail, "the google account should have been created before mattermost failed")
 	require.Equal(t, 1, h.google.createCalls)
-	require.Empty(t, h.sentEmails, "final emails should not send if mattermost invite failed")
+	require.Empty(t, h.invitedEmails, "the failed invite call never registered on the fake mattermost server")
+	require.Len(t, h.sentEmails, 2, "final emails must still send even when the mattermost invite fails")
 }
 
-func TestProvisionRetryAfterPartialFailureReachesComplete(t *testing.T) {
+func TestProvisionRetryAfterGoogleFailureReachesComplete(t *testing.T) {
 	h := newTestHarness(t)
-	h.failMattermost = true
+	h.google.failCreate = true
 	record := newTestRecord(h.service.db, t)
 
 	err := h.service.Provision(context.Background(), record)
 	require.Error(t, err)
 	require.Equal(t, models.StateFailed, record.State)
-	require.Equal(t, 1, h.google.createCalls)
+	require.Empty(t, record.KthaisEmail)
 
-	// Simulate an operator fixing whatever made Mattermost fail, then
-	// retrying — same idempotent Provision() call, same record.
-	h.failMattermost = false
+	// Simulate an operator fixing whatever made Google account creation
+	// fail, then retrying — same idempotent Provision() call, same record.
+	h.google.failCreate = false
 	err = h.service.Provision(context.Background(), record)
 	require.NoError(t, err)
 
 	require.Equal(t, models.StateComplete, record.State)
-	require.Equal(t, 1, h.google.createCalls, "retry must not re-create the google account")
-	require.Equal(t, 1, h.google.resetCalls, "retry mints a fresh temp password instead of reusing the original")
+	require.Equal(t, 1, h.google.createCalls)
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.invitedEmails)
 }
 

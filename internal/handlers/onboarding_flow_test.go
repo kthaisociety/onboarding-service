@@ -64,6 +64,7 @@ type fakeBackend struct {
 	sentEmails       []map[string]string
 	recordedAccounts []map[string]string
 	mattermostFail   bool
+	sendEmailFail    bool
 }
 
 func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
@@ -73,6 +74,10 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/onboarding/send-email":
+			if fake.sendEmailFail {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			var body map[string]string
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			fake.sentEmails = append(fake.sentEmails, body)
@@ -348,7 +353,7 @@ func TestRetryProvisioning(t *testing.T) {
 	require.Eventually(t, func() bool { return len(fake.sentEmails) == 2 }, waitFor, tick)
 	confirmToken := extractToken(t, fake.sentEmails[1]["button_url"])
 
-	fake.mattermostFail = true
+	fake.sendEmailFail = true
 	rec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -364,7 +369,7 @@ func TestRetryProvisioning(t *testing.T) {
 	})
 
 	t.Run("retry succeeds once the underlying problem is fixed", func(t *testing.T) {
-		fake.mattermostFail = false
+		fake.sendEmailFail = false
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/retry-provisioning",
 			map[string]string{"application_id": "app-retry"}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -444,7 +449,7 @@ func TestRetryProvisioningByRecordID(t *testing.T) {
 	require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
 	confirmToken := extractToken(t, fake.sentEmails[1]["button_url"])
 
-	fake.mattermostFail = true
+	fake.sendEmailFail = true
 	confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 	require.Equal(t, http.StatusOK, confirmRec.Code)
 
@@ -470,7 +475,7 @@ func TestRetryProvisioningByRecordID(t *testing.T) {
 	})
 
 	t.Run("retrying by record id succeeds once the underlying problem is fixed", func(t *testing.T) {
-		fake.mattermostFail = false
+		fake.sendEmailFail = false
 		rec := postJSON(map[string]any{"id": failed.ID})
 		require.Equal(t, http.StatusOK, rec.Code)
 
@@ -663,15 +668,23 @@ func TestRestart(t *testing.T) {
 	require.Eventually(t, func() bool { return len(fake.sentEmails) >= baseline+2 }, waitFor, tick)
 	confirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
 
-	// Google succeeds (so KthaisEmail gets set) but Mattermost fails, so the
-	// record ends up StateFailed with a real KthaisEmail already on it —
-	// exactly the case restart must not clobber.
-	fake.mattermostFail = true
+	// Google succeeds (so KthaisEmail gets set) but the final-emails step
+	// fails, so the record ends up StateFailed with a real KthaisEmail
+	// already on it — exactly the case restart must not clobber. (The
+	// Mattermost invite itself is deliberately non-fatal now — see
+	// provisioning.Service.Provision — so it can no longer be used to
+	// induce this state.)
+	fake.sendEmailFail = true
 	confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 	var failed models.OnboardingRecord
 	require.NoError(t, json.Unmarshal(confirmRec.Body.Bytes(), &failed))
 	require.Equal(t, models.StateFailed, failed.State)
 	require.Equal(t, "ada.lovelace@kthais.com", failed.KthaisEmail)
+
+	// Restart re-sends the start-onboarding email (see below) — clear the
+	// fault now that it's done its job of producing a failed record, or
+	// that resend fails too and the test hangs waiting for it.
+	fake.sendEmailFail = false
 
 	emailsBeforeRestart := len(fake.sentEmails)
 
