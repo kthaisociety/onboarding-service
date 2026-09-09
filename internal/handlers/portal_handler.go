@@ -9,6 +9,7 @@ import (
 
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
+	"onboarding-service/internal/emailcontent"
 	"onboarding-service/internal/models"
 	"onboarding-service/internal/provisioning"
 	"onboarding-service/internal/utils"
@@ -116,11 +117,13 @@ func (h *PortalHandler) SubmitEmail(c *gin.Context) {
 	}
 
 	go func() {
+		settings, err := emailcontent.Load(h.db)
+		if err != nil {
+			log.Printf("submit-email: failed to load email settings for record %d, using defaults: %v", record.ID, err)
+		}
+
 		confirmLink := h.cfg.PortalBaseURL + "/confirm?token=" + raw
-		body := "Hi " + record.FirstName + ",\n\n" +
-			"Please confirm this is your KTH email address to continue setting up your KTH AI Society account.\n\n" +
-			"Click below, then confirm once more on the page that opens — that extra click keeps your account " +
-			"safe from automated email link scanners."
+		subject, body := emailcontent.BuildConfirm(settings.ConfirmIntroText, record.FirstName)
 		// Deliberately not "Confirm this is me" here too: this link is only
 		// ever a GET navigation (email clients strip JS/forms, so nothing in
 		// the email itself can perform the real confirm), and KTH's mail
@@ -128,7 +131,7 @@ func (h *PortalHandler) SubmitEmail(c *gin.Context) {
 		// ConfirmOnboarding's own comment for the other half of this. Using
 		// identical wording on both buttons made the flow look like a
 		// broken duplicate rather than two intentional steps.
-		if err := h.backend.SendEmail(kthEmail, "Confirm your KTH email", body, confirmLink, "Continue to confirm"); err != nil {
+		if err := h.backend.SendEmail(kthEmail, subject, body, confirmLink, emailcontent.ConfirmButtonText); err != nil {
 			log.Printf("submit-email: failed to send confirmation email for record %d: %v", record.ID, err)
 		}
 	}()

@@ -12,9 +12,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// EmailSettingsHandler owns the admin-editable intro text of all three
-// onboarding emails (start, account-credentials, Mattermost
-// getting-started). Like RecordsHandler and RecordActionsHandler, this
+// EmailSettingsHandler owns the admin-editable intro text of all four
+// onboarding emails (start, confirm-kth-email, account-credentials,
+// Mattermost getting-started). Like RecordsHandler and RecordActionsHandler, this
 // only ever sees requests from landingpage-backend's own admin-JWT-gated
 // proxy (see manual_onboarding_handler.go there) — onboarding-service has
 // no notion of admin identity itself, so the caller passes UpdatedByEmail
@@ -36,6 +36,7 @@ func (h *EmailSettingsHandler) Register(r *gin.RouterGroup) {
 
 type emailSettingsResponse struct {
 	StartIntroText      string `json:"start_intro_text"`
+	ConfirmIntroText    string `json:"confirm_intro_text"`
 	AccountIntroText    string `json:"account_intro_text"`
 	MattermostIntroText string `json:"mattermost_intro_text"`
 }
@@ -54,6 +55,7 @@ func orDefault(text, def string) string {
 func settingsResponse(settings models.OnboardingEmailSettings) emailSettingsResponse {
 	return emailSettingsResponse{
 		StartIntroText:      orDefault(settings.StartIntroText, emailcontent.DefaultStartIntro),
+		ConfirmIntroText:    orDefault(settings.ConfirmIntroText, emailcontent.DefaultConfirmIntro),
 		AccountIntroText:    settings.AccountIntroText,
 		MattermostIntroText: orDefault(settings.MattermostIntroText, emailcontent.DefaultMattermostIntro),
 	}
@@ -70,6 +72,7 @@ func (h *EmailSettingsHandler) Get(c *gin.Context) {
 
 type updateEmailSettingsRequest struct {
 	StartIntroText      string `json:"start_intro_text"`
+	ConfirmIntroText    string `json:"confirm_intro_text"`
 	AccountIntroText    string `json:"account_intro_text"`
 	MattermostIntroText string `json:"mattermost_intro_text"`
 	UpdatedByEmail      string `json:"updated_by_email"`
@@ -84,6 +87,7 @@ func (h *EmailSettingsHandler) Update(c *gin.Context) {
 
 	settings, err := emailcontent.Save(h.db,
 		strings.TrimSpace(req.StartIntroText),
+		strings.TrimSpace(req.ConfirmIntroText),
 		strings.TrimSpace(req.AccountIntroText),
 		strings.TrimSpace(req.MattermostIntroText),
 		strings.TrimSpace(req.UpdatedByEmail),
@@ -103,8 +107,17 @@ type previewEmailSettingsRequest struct {
 // Preview builds the exact subject/body the matching Build* function would
 // produce for the given (possibly unsaved) intro text, so the admin
 // panel's preview can never drift from what a real send would produce.
-// kind selects which of the three onboarding emails to render; the
-// account email is rendered with sample credentials, never real data.
+// kind selects which of the four onboarding emails to render; the account
+// email is rendered with sample credentials, never real data.
+//
+// Also returns the button this email would actually carry — account and
+// mattermost both have a fixed, non-admin-editable button (see
+// emailcontent.AccountButtonURL/Text and MattermostButtonText), so the
+// preview can show the real thing instead of leaving it for the caller to
+// guess or fall back to a default. start and confirm return only a button
+// text, no URL: their real ones are per-record portal token URLs that
+// don't exist yet for a preview — landingpage-backend's proxy substitutes
+// its own placeholder for those two.
 func (h *EmailSettingsHandler) Preview(c *gin.Context) {
 	var req previewEmailSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -112,18 +125,24 @@ func (h *EmailSettingsHandler) Preview(c *gin.Context) {
 		return
 	}
 
-	var subject, body string
+	var subject, body, buttonURL, buttonText string
 	switch req.Kind {
 	case "start":
 		subject, body = emailcontent.BuildStart(req.IntroText, emailcontent.PreviewFirstName)
+		buttonText = emailcontent.StartButtonText
+	case "confirm":
+		subject, body = emailcontent.BuildConfirm(req.IntroText, emailcontent.PreviewFirstName)
+		buttonText = emailcontent.ConfirmButtonText
 	case "account":
 		subject, body = emailcontent.PreviewAccount(req.IntroText)
+		buttonURL, buttonText = emailcontent.AccountButtonURL, emailcontent.AccountButtonText
 	case "mattermost":
 		subject, body = emailcontent.BuildMattermost(req.IntroText, emailcontent.PreviewFirstName)
+		buttonURL, buttonText = h.cfg.MattermostURL, emailcontent.MattermostButtonText
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, account, mattermost"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"subject": subject, "body": body})
+	c.JSON(http.StatusOK, gin.H{"subject": subject, "body": body, "button_url": buttonURL, "button_text": buttonText})
 }

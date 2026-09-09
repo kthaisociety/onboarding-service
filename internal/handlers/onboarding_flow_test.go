@@ -795,6 +795,7 @@ func TestEmailSettings(t *testing.T) {
 		var body map[string]string
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		require.Equal(t, emailcontent.DefaultStartIntro, body["start_intro_text"])
+		require.Equal(t, emailcontent.DefaultConfirmIntro, body["confirm_intro_text"])
 		require.Equal(t, emailcontent.DefaultMattermostIntro, body["mattermost_intro_text"])
 		// The account email has no non-empty default — it has no intro
 		// paragraph at all until an admin adds one.
@@ -816,6 +817,17 @@ func TestEmailSettings(t *testing.T) {
 		var settings map[string]string
 		require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &settings))
 		require.Equal(t, emailcontent.DefaultStartIntro, settings["start_intro_text"])
+	})
+
+	t.Run("confirm preview", func(t *testing.T) {
+		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
+			"kind": "confirm", "intro_text": "Almost there, {{first_name}}!",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, emailcontent.ConfirmSubject, body["subject"])
+		require.Contains(t, body["body"], "Almost there, "+emailcontent.PreviewFirstName+"!")
 	})
 
 	t.Run("account preview uses sample credentials, never real data", func(t *testing.T) {
@@ -851,6 +863,7 @@ func TestEmailSettings(t *testing.T) {
 	t.Run("saving takes effect for the next real sends", func(t *testing.T) {
 		saveRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
 			"start_intro_text":      "Hi {{first_name}}, so glad you're joining us!",
+			"confirm_intro_text":    "One more step, {{first_name}}!",
 			"account_intro_text":    "Welcome aboard, {{first_name}}!",
 			"mattermost_intro_text": "Say hi in #general, {{first_name}}.",
 			"updated_by_email":      "admin@kthais.com",
@@ -885,7 +898,9 @@ func TestEmailSettings(t *testing.T) {
 			}, "")
 			require.Equal(t, http.StatusOK, submitRec.Code)
 			require.Eventually(t, func() bool { return len(fake.sentEmails) > emailsBefore+1 }, waitFor, tick)
-			confirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+			confirmEmail := fake.sentEmails[len(fake.sentEmails)-1]
+			require.Contains(t, confirmEmail["body"], "One more step, Margaret!")
+			confirmToken := extractToken(t, confirmEmail["button_url"])
 
 			confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 			require.Equal(t, http.StatusOK, confirmRec.Code)

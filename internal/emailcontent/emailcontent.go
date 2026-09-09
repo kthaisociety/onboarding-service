@@ -30,6 +30,21 @@ const (
 const StartSubject = "Welcome to KTH AI Society"
 const DefaultStartIntro = "Congratulations on being accepted to KTH AI Society!"
 
+// StartButtonText labels the start email's button. Not paired with a
+// StartButtonURL constant — like ConfirmButtonText, that link is a
+// per-record portal token, not a fixed value.
+const StartButtonText = "Start onboarding"
+
+const ConfirmSubject = "Confirm your KTH email"
+const DefaultConfirmIntro = "Please confirm this is your KTH email address to continue setting up your KTH AI Society account."
+
+// ConfirmButtonText labels the confirm email's button. Not paired with a
+// ConfirmButtonURL constant like Account/Mattermost get — that link is a
+// per-record portal token (see PortalHandler.SubmitEmail), so it doesn't
+// exist as a fixed value; the admin-panel preview substitutes its own
+// placeholder the same way it already does for the start email's button.
+const ConfirmButtonText = "Continue to confirm"
+
 const AccountSubject = "Your KTH AI Society account"
 
 // AccountButtonURL/AccountButtonText take the recipient straight to Google's
@@ -92,6 +107,25 @@ func BuildStart(introText, firstName string) (subject, body string) {
 	return StartSubject, body
 }
 
+// BuildConfirm composes the "confirm your KTH email" email from an
+// admin-editable intro paragraph plus a fixed trailing explanation of why
+// the flow needs a second click on the page the button opens — that
+// explanation describes real security behavior (defending against mail
+// scanners prefetching the link), so it's never admin-editable, same
+// reasoning as BuildAccount's credentials list below.
+func BuildConfirm(introText, firstName string) (subject, body string) {
+	if strings.TrimSpace(introText) == "" {
+		introText = DefaultConfirmIntro
+	}
+	intro := substitute(introText, firstName)
+
+	body = "Hi " + firstName + ",\n\n" +
+		intro + "\n\n" +
+		"Click below, then confirm once more on the page that opens — that extra click keeps your account " +
+		"safe from automated email link scanners."
+	return ConfirmSubject, body
+}
+
 // BuildAccount composes the account-credentials email. introText is an
 // optional personal note before the credentials; unlike the other two
 // emails it has no non-empty default — the credentials list below it is
@@ -146,12 +180,13 @@ func Load(db *gorm.DB) (models.OnboardingEmailSettings, error) {
 }
 
 // Save creates the singleton row on first save, or updates it thereafter.
-func Save(db *gorm.DB, startIntro, accountIntro, mattermostIntro, updatedByEmail string) (models.OnboardingEmailSettings, error) {
+func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, updatedByEmail string) (models.OnboardingEmailSettings, error) {
 	settings, err := Load(db)
 	if err != nil {
 		return settings, err
 	}
 	settings.StartIntroText = startIntro
+	settings.ConfirmIntroText = confirmIntro
 	settings.AccountIntroText = accountIntro
 	settings.MattermostIntroText = mattermostIntro
 	settings.UpdatedByEmail = updatedByEmail
@@ -161,6 +196,7 @@ func Save(db *gorm.DB, startIntro, accountIntro, mattermostIntro, updatedByEmail
 	} else {
 		err = db.Model(&settings).Updates(map[string]any{
 			"start_intro_text":      startIntro,
+			"confirm_intro_text":    confirmIntro,
 			"account_intro_text":    accountIntro,
 			"mattermost_intro_text": mattermostIntro,
 			"updated_by_email":      updatedByEmail,
