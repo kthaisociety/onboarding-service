@@ -12,6 +12,7 @@ import (
 	"onboarding-service/internal/handlers"
 	"onboarding-service/internal/mattermost"
 	"onboarding-service/internal/models"
+	"onboarding-service/internal/offboarding"
 	"onboarding-service/internal/provisioning"
 
 	"github.com/gin-gonic/gin"
@@ -78,6 +79,7 @@ func main() {
 	}
 
 	provisioningService := provisioning.NewService(db, googleClient, mattermostClient, backend)
+	offboardingService := offboarding.NewService(googleClient, mattermostClient)
 
 	// One-shot reachability check against the backend, logged at boot only —
 	// not a recurring healthcheck. Purpose is to surface a misconfigured
@@ -107,6 +109,7 @@ func main() {
 	handlers.NewRecordActionsHandler(db, cfg, backend, provisioningService).Register(api)
 	handlers.NewRecordsHandler(db, cfg).Register(api)
 	handlers.NewEmailSettingsHandler(db, cfg).Register(api)
+	handlers.NewOffboardingHandler(cfg, offboardingService).Register(api)
 
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("onboarding-service listening on %s", addr)

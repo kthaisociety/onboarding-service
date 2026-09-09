@@ -36,6 +36,24 @@ type Provisioner interface {
 	AddToGroup(ctx context.Context, groupEmail, memberEmail string) error
 }
 
+// Deprovisioner is the seam internal/offboarding tests fake — the
+// opposite half of Provisioner, for suspending/deleting an account rather
+// than creating one. A separate interface (not folded into Provisioner)
+// since it has its own, unrelated caller.
+type Deprovisioner interface {
+	SuspendUser(ctx context.Context, primaryEmail string) error
+	DeleteUser(ctx context.Context, primaryEmail string) error
+}
+
+// Client is both halves — provisioning and deprovisioning — of what this
+// package can do against a real Workspace account. NewClient returns this
+// so either narrower interface can be used without a type assertion; the
+// concrete client struct satisfies both.
+type Client interface {
+	Provisioner
+	Deprovisioner
+}
+
 type client struct {
 	svc *admin.Service
 }
@@ -46,7 +64,7 @@ type client struct {
 // admin.directory.group.member. Does not itself make a network call (the
 // JWT exchange happens lazily on first use), so it's safe to call at boot
 // even if the network is briefly unavailable.
-func NewClient(ctx context.Context, serviceAccountJSON []byte, impersonateAs string) (Provisioner, error) {
+func NewClient(ctx context.Context, serviceAccountJSON []byte, impersonateAs string) (Client, error) {
 	if impersonateAs == "" {
 		return nil, fmt.Errorf("impersonateAs must not be empty")
 	}
@@ -116,6 +134,28 @@ func (c *client) AddToGroup(ctx context.Context, groupEmail, memberEmail string)
 		return nil
 	}
 	return fmt.Errorf("adding %s to group %s: %w", memberEmail, groupEmail, err)
+}
+
+// SuspendUser suspends (not deletes) the Workspace account for
+// primaryEmail — reversible from the Admin Console at any time. Uses the
+// same admin.directory.user scope already granted for provisioning, so
+// this needs no new Google Cloud Console authorization.
+func (c *client) SuspendUser(ctx context.Context, primaryEmail string) error {
+	update := &admin.User{Suspended: true}
+	if _, err := c.svc.Users.Update(primaryEmail, update).Context(ctx).Do(); err != nil {
+		return fmt.Errorf("suspending user %s: %w", primaryEmail, err)
+	}
+	return nil
+}
+
+// DeleteUser permanently deletes the Workspace account for primaryEmail.
+// Cannot be undone from this system — Google itself retains a 20-day
+// recovery window in the Admin Console independent of anything here.
+func (c *client) DeleteUser(ctx context.Context, primaryEmail string) error {
+	if err := c.svc.Users.Delete(primaryEmail).Context(ctx).Do(); err != nil {
+		return fmt.Errorf("deleting user %s: %w", primaryEmail, err)
+	}
+	return nil
 }
 
 func isNotFound(err error) bool {
