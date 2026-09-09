@@ -700,6 +700,71 @@ func TestRestart(t *testing.T) {
 	})
 }
 
+// TestDeleteRecord covers the admin's ability to actually remove an old
+// onboarding record from the list — Cancel/Restart only ever changed
+// State, never gave a way to clear a finished entry out entirely.
+func TestDeleteRecord(t *testing.T) {
+	engine, cfg, _ := newTestServer(t)
+
+	postJSON := func(path string, body map[string]any) *httptest.ResponseRecorder {
+		payload, err := json.Marshal(body)
+		require.NoError(t, err)
+		req := httptest.NewRequest("POST", path, strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+	recordsList := func() []models.OnboardingRecord {
+		rec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, cfg.OnboardingServiceSecret)
+		var records []models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &records))
+		return records
+	}
+
+	t.Run("deleting an unknown record 404s", func(t *testing.T) {
+		rec := postJSON("/internal/onboarding/delete-record", map[string]any{"id": uint(999999)})
+		require.Equal(t, http.StatusNotFound, rec.Code)
+	})
+
+	t.Run("deleting a record still in progress is rejected", func(t *testing.T) {
+		doJSON(t, engine, "POST", "/notify", map[string]string{
+			"first_name":     "Grace",
+			"last_name":      "Hopper",
+			"personal_email": "grace-delete@example.com",
+			"assigned_team":  "Development",
+		}, cfg.OnboardingServiceSecret)
+		records := recordsList()
+		grace := records[len(records)-1]
+		require.Equal(t, models.StateNotified, grace.State)
+
+		rec := postJSON("/internal/onboarding/delete-record", map[string]any{"id": grace.ID})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("deleting a cancelled record removes it from the list", func(t *testing.T) {
+		doJSON(t, engine, "POST", "/notify", map[string]string{
+			"first_name":     "Ada",
+			"last_name":      "Lovelace",
+			"personal_email": "ada-delete@example.com",
+			"assigned_team":  "IT",
+		}, cfg.OnboardingServiceSecret)
+		records := recordsList()
+		ada := records[len(records)-1]
+
+		cancelRec := postJSON("/internal/onboarding/cancel", map[string]any{"id": ada.ID})
+		require.Equal(t, http.StatusOK, cancelRec.Code)
+
+		rec := postJSON("/internal/onboarding/delete-record", map[string]any{"id": ada.ID})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		for _, r := range recordsList() {
+			require.NotEqual(t, ada.ID, r.ID, "the deleted record must no longer appear in the list")
+		}
+	})
+}
+
 func TestEmailSettings(t *testing.T) {
 	engine, cfg, fake := newTestServer(t)
 

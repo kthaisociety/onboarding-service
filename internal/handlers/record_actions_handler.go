@@ -37,6 +37,7 @@ func (h *RecordActionsHandler) Register(r *gin.RouterGroup) {
 	r.POST("/internal/onboarding/retry-provisioning", requireServiceSecret(h.cfg), h.Retry)
 	r.POST("/internal/onboarding/cancel", requireServiceSecret(h.cfg), h.Cancel)
 	r.POST("/internal/onboarding/restart", requireServiceSecret(h.cfg), h.Restart)
+	r.POST("/internal/onboarding/delete-record", requireServiceSecret(h.cfg), h.Delete)
 }
 
 // invalidateOutstandingTokens marks every unused token for a record as
@@ -184,4 +185,40 @@ func (h *RecordActionsHandler) Restart(c *gin.Context) {
 	sendStartOnboardingEmailAsync(h.db, h.cfg, h.backend, record, raw)
 
 	c.JSON(http.StatusOK, record)
+}
+
+// Delete permanently removes an OnboardingRecord (and its tokens) from the
+// admin records list — for clearing out old, finished entries that no
+// longer need tracking. Only allowed once a record has reached one of its
+// terminal states: deleting one still in progress would destroy the only
+// record of it while someone might still complete the flow, and silently
+// orphan any outstanding token instead of invalidating it the way Cancel
+// does. A soft delete (gorm.Model's DeletedAt), not Unscoped — recoverable
+// by hand if this turns out to be a mistake, same as every other model
+// here.
+func (h *RecordActionsHandler) Delete(c *gin.Context) {
+	record, ok := h.findRecord(c)
+	if !ok {
+		return
+	}
+
+	switch record.State {
+	case models.StateComplete, models.StateCancelled, models.StateOffboarded, models.StateFailed:
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "only a complete, cancelled, offboarded, or failed record can be deleted"})
+		return
+	}
+
+	if err := h.db.Where("onboarding_record_id = ?", record.ID).Delete(&models.OnboardingToken{}).Error; err != nil {
+		log.Printf("delete-record: failed to delete tokens for record %d: %v", record.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete"})
+		return
+	}
+	if err := h.db.Delete(record).Error; err != nil {
+		log.Printf("delete-record: failed to delete record %d: %v", record.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
