@@ -151,8 +151,15 @@ func (c *client) SuspendUser(ctx context.Context, primaryEmail string) error {
 // DeleteUser permanently deletes the Workspace account for primaryEmail.
 // Cannot be undone from this system — Google itself retains a 20-day
 // recovery window in the Admin Console independent of anything here.
+// Treats "already gone" as success (same idempotency reasoning as
+// AddToGroup above) so a retry after a partial failure — e.g. the Google
+// half succeeding but the Mattermost half failing — never reports the
+// already-completed Google step as an error the second time around.
 func (c *client) DeleteUser(ctx context.Context, primaryEmail string) error {
 	if err := c.svc.Users.Delete(primaryEmail).Context(ctx).Do(); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("deleting user %s: %w", primaryEmail, err)
 	}
 	return nil
