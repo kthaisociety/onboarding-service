@@ -535,6 +535,52 @@ func TestCancel(t *testing.T) {
 		rec := postJSON("/internal/onboarding/cancel", map[string]any{"id": recordID})
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
+
+	// Regression for the stale-record gap Sam hit in the running app: a
+	// completed onboarding whose member was later removed some other way
+	// (or before OffboardingHandler.Delete existed) had no way to clear it
+	// — Cancel used to reject StateComplete outright. It's now the manual
+	// counterpart to Delete's automatic marking, landing on StateOffboarded
+	// specifically (not StateCancelled) since the onboarding itself did
+	// complete.
+	t.Run("cancelling a complete record marks it offboarded instead of cancelled", func(t *testing.T) {
+		doJSON(t, engine, "POST", "/notify", map[string]string{
+			"first_name":     "Grace",
+			"last_name":      "Hopper",
+			"personal_email": "grace-cancel@example.com",
+			"assigned_team":  "Development",
+		}, cfg.OnboardingServiceSecret)
+		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
+		graceStartToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+
+		doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
+			"token": graceStartToken, "kth_email": "grace-cancel@kth.se",
+		}, "")
+		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 3 }, waitFor, tick)
+		graceConfirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+
+		confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": graceConfirmToken}, "")
+		var complete models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(confirmRec.Body.Bytes(), &complete))
+		require.Equal(t, models.StateComplete, complete.State)
+
+		rec := postJSON("/internal/onboarding/cancel", map[string]any{"id": complete.ID})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var offboarded models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &offboarded))
+		require.Equal(t, models.StateOffboarded, offboarded.State)
+
+		t.Run("cancelling an already-offboarded record is rejected", func(t *testing.T) {
+			rec := postJSON("/internal/onboarding/cancel", map[string]any{"id": complete.ID})
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+
+		t.Run("restarting an offboarded record is rejected", func(t *testing.T) {
+			rec := postJSON("/internal/onboarding/restart", map[string]any{"id": complete.ID})
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	})
 }
 
 func TestRestart(t *testing.T) {
@@ -573,6 +619,26 @@ func TestRestart(t *testing.T) {
 		require.Equal(t, models.StateComplete, complete.State)
 
 		rec := postJSON("/internal/onboarding/restart", map[string]any{"id": complete.ID})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("restarting a cancelled record is rejected", func(t *testing.T) {
+		doJSON(t, engine, "POST", "/notify", map[string]string{
+			"first_name":     "Bob",
+			"last_name":      "Noyce",
+			"personal_email": "bob@example.com",
+			"assigned_team":  "IT",
+		}, cfg.OnboardingServiceSecret)
+
+		listRec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, cfg.OnboardingServiceSecret)
+		var records []models.OnboardingRecord
+		require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &records))
+		bob := records[len(records)-1]
+
+		cancelRec := postJSON("/internal/onboarding/cancel", map[string]any{"id": bob.ID})
+		require.Equal(t, http.StatusOK, cancelRec.Code)
+
+		rec := postJSON("/internal/onboarding/restart", map[string]any{"id": bob.ID})
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 

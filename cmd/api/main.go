@@ -109,7 +109,7 @@ func main() {
 	handlers.NewRecordActionsHandler(db, cfg, backend, provisioningService).Register(api)
 	handlers.NewRecordsHandler(db, cfg).Register(api)
 	handlers.NewEmailSettingsHandler(db, cfg).Register(api)
-	handlers.NewOffboardingHandler(cfg, offboardingService).Register(api)
+	handlers.NewOffboardingHandler(db, cfg, offboardingService).Register(api)
 
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("onboarding-service listening on %s", addr)

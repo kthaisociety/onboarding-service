@@ -18,6 +18,13 @@ const (
 	// (surfaced as such in the admin records list); a cancelled one was a
 	// deliberate decision and should never be flagged for follow-up.
 	StateCancelled OnboardingState = "cancelled"
+	// StateOffboarded is set automatically when a member who completed
+	// onboarding is later permanently removed via
+	// OffboardingHandler.Delete — distinct from StateCancelled, which means
+	// the onboarding itself was aborted before ever completing. Without
+	// this, a fully offboarded member's record would stay stuck at
+	// "complete" forever with no accurate status and no available action.
+	StateOffboarded OnboardingState = "offboarded"
 )
 
 // OnboardingRecord tracks one accepted applicant through the onboarding

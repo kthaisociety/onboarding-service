@@ -97,13 +97,22 @@ func (h *RecordActionsHandler) Retry(c *gin.Context) {
 // any outstanding tokens so old emailed links stop working. Deliberately
 // does not touch any Google Workspace/Mattermost account that may already
 // exist: cleanup there is manual, by design.
+//
+// A record already at StateComplete is also acceptable here, transitioning
+// to StateOffboarded instead of StateCancelled: this is the manual
+// counterpart to OffboardingHandler.Delete automatically marking a record
+// offboarded, for a record that completed before that existed, or was
+// removed some other way. "Cancelled" would misdescribe it — the
+// onboarding itself was never aborted, the member just isn't active
+// anymore. Only a record already in one of those two terminal states is
+// rejected as a no-op.
 func (h *RecordActionsHandler) Cancel(c *gin.Context) {
 	record, ok := h.findRecord(c)
 	if !ok {
 		return
 	}
 
-	if record.State == models.StateComplete || record.State == models.StateCancelled {
+	if record.State == models.StateCancelled || record.State == models.StateOffboarded {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "record is already " + string(record.State)})
 		return
 	}
@@ -113,12 +122,16 @@ func (h *RecordActionsHandler) Cancel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel"})
 		return
 	}
-	record.State = models.StateCancelled
-	if err := h.db.Model(record).Update("state", models.StateCancelled).Error; err != nil {
+	newState := models.StateCancelled
+	if record.State == models.StateComplete {
+		newState = models.StateOffboarded
+	}
+	if err := h.db.Model(record).Update("state", newState).Error; err != nil {
 		log.Printf("cancel: failed to save record %d: %v", record.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel"})
 		return
 	}
+	record.State = newState
 
 	c.JSON(http.StatusOK, record)
 }
@@ -128,16 +141,18 @@ func (h *RecordActionsHandler) Cancel(c *gin.Context) {
 // KthaisEmail is deliberately left untouched: clearing it would make
 // ensureAccount (internal/provisioning/provisioning.go) think no account
 // exists yet and create a second one on the next provisioning run, since
-// the first address is already taken. Only allowed when not already
-// complete — nothing left to restart at that point.
+// the first address is already taken. Rejected for any of the three
+// terminal states: nothing left to restart once complete, and re-starting
+// a cancelled or offboarded record would re-provision an account for
+// someone an admin deliberately stopped tracking or already removed.
 func (h *RecordActionsHandler) Restart(c *gin.Context) {
 	record, ok := h.findRecord(c)
 	if !ok {
 		return
 	}
 
-	if record.State == models.StateComplete {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "record is already complete"})
+	if record.State == models.StateComplete || record.State == models.StateCancelled || record.State == models.StateOffboarded {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "record is already " + string(record.State)})
 		return
 	}
 

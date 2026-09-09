@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"onboarding-service/internal/config"
+	"onboarding-service/internal/models"
 	"onboarding-service/internal/offboarding"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // OffboardingHandler is the mechanism half of member offboarding —
@@ -21,12 +23,13 @@ import (
 // onboarding-service handler: this service only ever trusts the shared
 // secret, never re-derives admin identity itself.
 type OffboardingHandler struct {
+	db          *gorm.DB
 	cfg         *config.Config
 	offboarding *offboarding.Service
 }
 
-func NewOffboardingHandler(cfg *config.Config, svc *offboarding.Service) *OffboardingHandler {
-	return &OffboardingHandler{cfg: cfg, offboarding: svc}
+func NewOffboardingHandler(db *gorm.DB, cfg *config.Config, svc *offboarding.Service) *OffboardingHandler {
+	return &OffboardingHandler{db: db, cfg: cfg, offboarding: svc}
 }
 
 func (h *OffboardingHandler) Register(r *gin.RouterGroup) {
@@ -68,6 +71,10 @@ func (h *OffboardingHandler) Deactivate(c *gin.Context) {
 
 // Delete permanently deletes the Google account and attempts to
 // permanently delete the Mattermost account for email. Cannot be undone.
+// Also marks any OnboardingRecord for this email as offboarded — without
+// that, a member who completed onboarding and was later deleted here would
+// leave their record stuck at "complete" forever, with no state that
+// accurately reflects they're gone and no admin action available on it.
 func (h *OffboardingHandler) Delete(c *gin.Context) {
 	var req offboardingRequest
 	if err := c.ShouldBindJSON(&req); err != nil || !isKthaisEmail(req.Email) {
@@ -83,5 +90,28 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	h.markOnboardingRecordOffboarded(req.Email)
+
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// markOnboardingRecordOffboarded is best-effort and never affects the
+// response: the real, irreversible work (deleting the actual Google
+// Workspace/Mattermost accounts) already succeeded by the time this runs,
+// so a failure to update our own record-keeping shouldn't be reported as
+// an offboarding failure — it's logged instead. Matches on KthaisEmail,
+// not PersonalEmail: that's the address that was actually deleted.
+func (h *OffboardingHandler) markOnboardingRecordOffboarded(email string) {
+	result := h.db.Model(&models.OnboardingRecord{}).
+		Where("kthais_email = ? AND state NOT IN ?", email, []models.OnboardingState{
+			models.StateCancelled, models.StateOffboarded,
+		}).
+		Update("state", models.StateOffboarded)
+	if result.Error != nil {
+		log.Printf("offboarding: deleted %s but failed to update its onboarding record: %v", email, result.Error)
+		return
+	}
+	if result.RowsAffected > 0 {
+		log.Printf("offboarding: marked the onboarding record for %s as offboarded", email)
+	}
 }

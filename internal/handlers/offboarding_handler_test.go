@@ -10,11 +10,25 @@ import (
 
 	"onboarding-service/internal/config"
 	"onboarding-service/internal/mattermost"
+	"onboarding-service/internal/models"
 	"onboarding-service/internal/offboarding"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+// newTestOffboardingDB is a fresh in-memory SQLite database per test — same
+// convention as onboarding_flow_test.go's newTestServer, so this doesn't
+// need a real Postgres instance.
+func newTestOffboardingDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&models.OnboardingRecord{}))
+	return db
+}
 
 // noopDeprovisioner always succeeds — this test suite only needs to prove
 // the HTTP layer (secret gating, email validation, status codes), not
@@ -41,11 +55,12 @@ func TestOffboardingHandler(t *testing.T) {
 	}
 	mm := mattermost.New(cfg)
 	svc := offboarding.NewService(noopDeprovisioner{}, mm)
+	db := newTestOffboardingDB(t)
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/")
-	NewOffboardingHandler(cfg, svc).Register(api)
+	NewOffboardingHandler(db, cfg, svc).Register(api)
 
 	post := func(path, secret string, body map[string]any) *httptest.ResponseRecorder {
 		payload, err := json.Marshal(body)
@@ -88,4 +103,50 @@ func TestOffboardingHandler(t *testing.T) {
 			})
 		})
 	}
+
+	// Regression for the stale-record gap Sam hit in the running app: a
+	// member who completed onboarding and was later permanently deleted
+	// kept showing "Complete" in the admin records list forever, with no
+	// action available on it (retry/restart/cancel all only apply to
+	// non-complete records).
+	t.Run("delete marks the matching onboarding record as offboarded", func(t *testing.T) {
+		require.NoError(t, db.Create(&models.OnboardingRecord{
+			FirstName:     "Grace",
+			LastName:      "Hopper",
+			PersonalEmail: "grace@example.com",
+			AssignedTeam:  "Development",
+			State:         models.StateComplete,
+			KthaisEmail:   "grace@kthais.com",
+		}).Error)
+
+		rec := post("/internal/offboarding/delete", "test-secret", map[string]any{"email": "grace@kthais.com"})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var record models.OnboardingRecord
+		require.NoError(t, db.Where("kthais_email = ?", "grace@kthais.com").First(&record).Error)
+		require.Equal(t, models.StateOffboarded, record.State)
+	})
+
+	t.Run("delete leaves an already-cancelled record alone", func(t *testing.T) {
+		require.NoError(t, db.Create(&models.OnboardingRecord{
+			FirstName:     "Ada",
+			LastName:      "Lovelace",
+			PersonalEmail: "ada@example.com",
+			AssignedTeam:  "Research",
+			State:         models.StateCancelled,
+			KthaisEmail:   "ada@kthais.com",
+		}).Error)
+
+		rec := post("/internal/offboarding/delete", "test-secret", map[string]any{"email": "ada@kthais.com"})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var record models.OnboardingRecord
+		require.NoError(t, db.Where("kthais_email = ?", "ada@kthais.com").First(&record).Error)
+		require.Equal(t, models.StateCancelled, record.State, "an already-cancelled record shouldn't be relabeled offboarded")
+	})
+
+	t.Run("delete with no matching onboarding record is still a success", func(t *testing.T) {
+		rec := post("/internal/offboarding/delete", "test-secret", map[string]any{"email": "no-record@kthais.com"})
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
 }
