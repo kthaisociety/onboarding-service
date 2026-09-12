@@ -19,6 +19,10 @@ import (
 // interview-invite preview.
 const PreviewFirstName = "Alex"
 
+// PreviewAssignedTeam is a sample team for the admin panel's preview of the
+// start email's {{team}} placeholder — never a real assignment.
+const PreviewAssignedTeam = "IT"
+
 // previewKthaisEmail/previewTempPassword are fake sample values used only
 // when rendering an admin preview of the account-credentials email — never
 // real data.
@@ -28,7 +32,7 @@ const (
 )
 
 const StartSubject = "Welcome to KTH AI Society"
-const DefaultStartIntro = "Congratulations on being accepted to KTH AI Society!"
+const DefaultStartIntro = "Congratulations on being accepted to KTH AI Society! You've been placed on the {{team}} team."
 
 // StartButtonText labels the start email's button. Not paired with a
 // StartButtonURL constant — like ConfirmButtonText, that link is a
@@ -81,21 +85,31 @@ const MattermostButtonText = "Open Mattermost"
 // sign-in identity is the new @kthais.com address.
 const DefaultMattermostIntro = "You've been added to the KTH AI Society Mattermost workspace. Click the button below and sign in with your new @kthais.com account to get started."
 
-// substitute replaces the one placeholder admin-edited intro text may
-// contain — plain string substitution, never executed as a template, since
-// this text is saved by an admin, not a developer.
-func substitute(text, firstName string) string {
-	return strings.ReplaceAll(text, "{{first_name}}", firstName)
+// substitute replaces the placeholders admin-edited intro text may contain —
+// plain string substitution, never executed as a template, since this text
+// is saved by an admin, not a developer. team is only meaningful for the
+// start email's {{team}} placeholder; other callers pass "" and, since
+// that's not a real value to substitute in, leave a literal "{{team}}" in
+// the text untouched rather than silently deleting it.
+func substitute(text, firstName, team string) string {
+	text = strings.ReplaceAll(text, "{{first_name}}", firstName)
+	if team != "" {
+		text = strings.ReplaceAll(text, "{{team}}", team)
+	}
+	return text
 }
 
 // BuildStart composes the "start your onboarding" email body from an
 // admin-editable intro paragraph plus the fixed greeting and next-steps
-// list every recipient needs, regardless of what the intro says.
-func BuildStart(introText, firstName string) (subject, body string) {
+// list every recipient needs, regardless of what the intro says. assignedTeam
+// fills the intro's {{team}} placeholder — this is the only onboarding email
+// that mentions team placement, since it doubles as the applicant's welcome
+// notice (landingpage-backend no longer sends a separate acceptance email).
+func BuildStart(introText, firstName, assignedTeam string) (subject, body string) {
 	if strings.TrimSpace(introText) == "" {
 		introText = DefaultStartIntro
 	}
-	intro := substitute(introText, firstName)
+	intro := substitute(introText, firstName, assignedTeam)
 
 	body = "Hi " + firstName + ",\n\n" +
 		intro + "\n\n" +
@@ -117,7 +131,7 @@ func BuildConfirm(introText, firstName string) (subject, body string) {
 	if strings.TrimSpace(introText) == "" {
 		introText = DefaultConfirmIntro
 	}
-	intro := substitute(introText, firstName)
+	intro := substitute(introText, firstName, "")
 
 	body = "Hi " + firstName + ",\n\n" +
 		intro + "\n\n" +
@@ -135,7 +149,7 @@ func BuildConfirm(introText, firstName string) (subject, body string) {
 func BuildAccount(introText, firstName, kthaisEmail, tempPassword string) (subject, body string) {
 	var lead string
 	if trimmed := strings.TrimSpace(introText); trimmed != "" {
-		lead = substitute(trimmed, firstName) + "\n\n"
+		lead = substitute(trimmed, firstName, "") + "\n\n"
 	}
 
 	body = "Hi " + firstName + ",\n\n" +
@@ -160,7 +174,7 @@ func BuildMattermost(introText, firstName string) (subject, body string) {
 	if strings.TrimSpace(introText) == "" {
 		introText = DefaultMattermostIntro
 	}
-	intro := substitute(introText, firstName)
+	intro := substitute(introText, firstName, "")
 
 	body = "Hi " + firstName + ",\n\n" + intro
 	return MattermostSubject, body

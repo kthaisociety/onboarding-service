@@ -151,7 +151,7 @@ func sendStartOnboardingEmailAsync(db *gorm.DB, cfg *config.Config, backend *bac
 			log.Printf("start-onboarding email: failed to load email settings for record %d, using default: %v", record.ID, err)
 		}
 		startLink := cfg.PortalBaseURL + "/start?token=" + rawToken
-		subject, body := emailcontent.BuildStart(settings.StartIntroText, record.FirstName)
+		subject, body := emailcontent.BuildStart(settings.StartIntroText, record.FirstName, record.AssignedTeam)
 		if err := backend.SendEmail(record.PersonalEmail, subject, body, startLink, emailcontent.StartButtonText); err != nil {
 			log.Printf("start-onboarding email: failed to send for record %d: %v", record.ID, err)
 		}

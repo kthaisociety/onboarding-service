@@ -128,7 +128,7 @@ func (h *EmailSettingsHandler) Preview(c *gin.Context) {
 	var subject, body, buttonURL, buttonText string
 	switch req.Kind {
 	case "start":
-		subject, body = emailcontent.BuildStart(req.IntroText, emailcontent.PreviewFirstName)
+		subject, body = emailcontent.BuildStart(req.IntroText, emailcontent.PreviewFirstName, emailcontent.PreviewAssignedTeam)
 		buttonText = emailcontent.StartButtonText
 	case "confirm":
 		subject, body = emailcontent.BuildConfirm(req.IntroText, emailcontent.PreviewFirstName)
