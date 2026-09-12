@@ -88,10 +88,14 @@ const DefaultMattermostIntro = "You've been added to the KTH AI Society Mattermo
 // substitute replaces the placeholders admin-edited intro text may contain —
 // plain string substitution, never executed as a template, since this text
 // is saved by an admin, not a developer. team is only meaningful for the
-// start email's {{team}} placeholder; other callers pass "".
+// start email's {{team}} placeholder; other callers pass "" and, since
+// that's not a real value to substitute in, leave a literal "{{team}}" in
+// the text untouched rather than silently deleting it.
 func substitute(text, firstName, team string) string {
 	text = strings.ReplaceAll(text, "{{first_name}}", firstName)
-	text = strings.ReplaceAll(text, "{{team}}", team)
+	if team != "" {
+		text = strings.ReplaceAll(text, "{{team}}", team)
+	}
 	return text
 }
 
