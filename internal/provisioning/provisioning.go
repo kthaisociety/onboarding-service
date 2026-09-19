@@ -93,6 +93,15 @@ func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord
 	// anyway. The getting-started email below links straight to the
 	// Mattermost server instead.
 
+	// Re-sent on every retry, same as AddToGroup above and ensureAccount's
+	// password reset: Provision restarts from the top on any later-step
+	// failure (e.g. sendFinalEmails or RecordAccount below), with nothing
+	// separately persisted to say Luma already succeeded. This assumes
+	// Luma's add-member endpoint is safe to call again for someone already
+	// on the tier (the common idempotent-upsert shape for this kind of
+	// "add member" API) — Luma's docs don't state this explicitly. If a
+	// duplicate add ever turns out to error rather than no-op, this is the
+	// place to add a persisted checkpoint or an idempotency key instead.
 	if err := s.backend.AddToLumaMembers(record.KthaisEmail); err != nil {
 		return fmt.Errorf("luma membership: %w", err)
 	}
