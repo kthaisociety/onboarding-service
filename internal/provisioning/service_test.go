@@ -79,6 +79,8 @@ type testHarness struct {
 	sentEmails        []map[string]string
 	recordedAccounts  []map[string]string
 	failRecordAccount bool
+	lumaAddedMembers  []string
+	failLumaAddMember bool
 }
 
 func newTestHarness(t *testing.T) *testHarness {
@@ -100,6 +102,15 @@ func newTestHarness(t *testing.T) *testHarness {
 			var body map[string]string
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			h.recordedAccounts = append(h.recordedAccounts, body)
+			w.WriteHeader(http.StatusOK)
+		case "/internal/onboarding/add-to-luma":
+			if h.failLumaAddMember {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			h.lumaAddedMembers = append(h.lumaAddedMembers, body["email"])
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -192,6 +203,36 @@ func TestProvisionHappyPath(t *testing.T) {
 	require.Len(t, h.sentEmails, 2)
 	require.Len(t, h.recordedAccounts, 1)
 	require.Equal(t, "grace.hopper@kthais.com", h.recordedAccounts[0]["kthais_email"])
+	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.lumaAddedMembers)
+}
+
+// TestProvisionLumaFailureFailsAndIsRetryable covers the blocking failure
+// mode: a Luma error stops provisioning at StateFailed (same as a Google
+// failure) rather than being swallowed, and — unlike a Google account
+// failure — the Google account and group membership from earlier steps are
+// already real and KthaisEmail is already persisted, so a retry after the
+// underlying Luma issue is fixed can pick up from there.
+func TestProvisionLumaFailureFailsAndIsRetryable(t *testing.T) {
+	h := newTestHarness(t)
+	h.failLumaAddMember = true
+	record := newTestRecord(h.service.db, t)
+
+	err := h.service.Provision(context.Background(), record)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "luma membership")
+
+	require.Equal(t, models.StateFailed, record.State)
+	require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
+	require.Empty(t, h.sentEmails, "final emails should never send if the luma step failed")
+	require.Empty(t, h.recordedAccounts)
+
+	h.failLumaAddMember = false
+	err = h.service.Provision(context.Background(), record)
+	require.NoError(t, err)
+
+	require.Equal(t, models.StateComplete, record.State)
+	require.Equal(t, 1, h.google.createCalls, "retry must not recreate the already-existing google account")
+	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.lumaAddedMembers)
 }
 
 func TestProvisionUnknownTeamFailsWithoutExternalCalls(t *testing.T) {

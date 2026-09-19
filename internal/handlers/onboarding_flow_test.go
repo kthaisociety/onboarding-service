@@ -86,6 +86,12 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			fake.recordedAccounts = append(fake.recordedAccounts, body)
 			w.WriteHeader(http.StatusOK)
+		case "/internal/onboarding/add-to-luma":
+			// This flow only needs provisioning to reach state=complete, so
+			// every add-member call just succeeds — see
+			// internal/provisioning's own tests for real Luma-failure
+			// coverage.
+			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

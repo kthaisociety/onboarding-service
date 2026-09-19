@@ -1,8 +1,9 @@
 // Package provisioning orchestrates build-order steps 6-8 of
 // onboarding-service-plan.md's flow: creating a member's @kthais.com
 // Google Workspace account, adding them to their team's Google Group,
-// inviting them to Mattermost, sending the final emails, and reporting the
-// result back to landingpage-backend.
+// adding them to Luma's "Members" tier, inviting them to Mattermost,
+// sending the final emails, and reporting the result back to
+// landingpage-backend.
 package provisioning
 
 import (
@@ -91,6 +92,10 @@ func (s *Service) Provision(ctx context.Context, record *models.OnboardingRecord
 	// would be redundant, and its own email delivery had proven unreliable
 	// anyway. The getting-started email below links straight to the
 	// Mattermost server instead.
+
+	if err := s.backend.AddToLumaMembers(record.KthaisEmail); err != nil {
+		return fmt.Errorf("luma membership: %w", err)
+	}
 
 	if err := s.save(record, models.StateProvisioned); err != nil {
 		return err
