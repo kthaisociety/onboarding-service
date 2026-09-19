@@ -67,6 +67,19 @@ func (c *Client) RecordAccount(applicationID, kthaisEmail string) error {
 	})
 }
 
+type addToLumaRequest struct {
+	Email string `json:"email"`
+}
+
+// AddToLumaMembers adds email to Luma's "Members" tier via the backend,
+// which already holds the org's Luma API key for its own newsletter-signup
+// integration (internal/luma) — this service deliberately doesn't get its
+// own separate Luma credential, same reasoning as reusing the backend's SES
+// setup for emails above.
+func (c *Client) AddToLumaMembers(email string) error {
+	return c.post("/internal/onboarding/add-to-luma", addToLumaRequest{Email: email})
+}
+
 func (c *Client) post(path string, body any) error {
 	if c.cfg.BackendURL == "" {
 		return fmt.Errorf("BACKEND_URL is not configured")
