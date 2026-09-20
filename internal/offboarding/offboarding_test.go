@@ -259,12 +259,15 @@ func TestDeleteLumaRouteNotDeployedIsNotAFailure(t *testing.T) {
 // ignored): a canceled context must abort the request quickly rather than
 // running it to completion against a slow backend.
 func TestDeactivateLumaRequestStopsOnContextCancellation(t *testing.T) {
+	// t.Cleanup runs in LIFO order, so server.Close (registered second, run
+	// first) must never be left waiting on a handler that's still blocked
+	// on this channel — register close(block) last so it runs first.
 	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-block // never responds until the test cleans up
 	}))
 	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(block) })
 	backend := backendclient.New(&config.Config{BackendURL: server.URL, OnboardingServiceSecret: "test-secret"})
 
 	google := &fakeDeprovisioner{}
