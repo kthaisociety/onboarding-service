@@ -72,12 +72,23 @@ type addToLumaRequest struct {
 }
 
 // AddToLumaMembers adds email to Luma's "Members" tier via the backend,
-// which already holds the org's Luma API key for its own newsletter-signup
-// integration (internal/luma) — this service deliberately doesn't get its
-// own separate Luma credential, same reasoning as reusing the backend's SES
-// setup for emails above.
+// which already holds the org's Luma API key (internal/luma) — this
+// service deliberately doesn't get its own separate Luma credential, same
+// reasoning as reusing the backend's SES setup for emails above.
 func (c *Client) AddToLumaMembers(email string) error {
 	return c.post("/internal/onboarding/add-to-luma", addToLumaRequest{Email: email})
+}
+
+type removeFromLumaRequest struct {
+	Email string `json:"email"`
+}
+
+// RemoveFromLumaMembers removes email from Luma's "Members" tier via the
+// backend, same credential-sharing reasoning as AddToLumaMembers. Called by
+// offboarding.Service.Deactivate/Delete, attempted alongside the Google/
+// Mattermost steps there regardless of whether those succeed.
+func (c *Client) RemoveFromLumaMembers(email string) error {
+	return c.post("/internal/onboarding/remove-from-luma", removeFromLumaRequest{Email: email})
 }
 
 func (c *Client) post(path string, body any) error {
