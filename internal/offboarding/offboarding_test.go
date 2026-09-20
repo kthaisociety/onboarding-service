@@ -83,14 +83,19 @@ func (f *fakeMattermostServer) client(t *testing.T) *mattermost.Client {
 // is simplest. Only implements /internal/onboarding/remove-from-luma,
 // the one endpoint this package calls.
 type fakeBackendServer struct {
-	failRemoveFromLuma  bool
-	removeFromLumaCalls []string
+	failRemoveFromLuma bool
+	// lumaRouteNotDeployed simulates the companion backend route not
+	// existing yet during a staged rollout: unlike failRemoveFromLuma
+	// (502, a real failure), the handler never even matches the path, so
+	// the fake never records the call, matching a genuinely-missing route.
+	lumaRouteNotDeployed bool
+	removeFromLumaCalls  []string
 }
 
 func (f *fakeBackendServer) client(t *testing.T) *backendclient.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/onboarding/remove-from-luma" {
+		if r.URL.Path != "/internal/onboarding/remove-from-luma" || f.lumaRouteNotDeployed {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -161,6 +166,24 @@ func TestDeactivateLumaFailureJoinsWithoutSuppressingOthers(t *testing.T) {
 	require.Equal(t, 1, mm.deleteCalls, "mattermost must still be attempted even though google and luma both failed")
 }
 
+// TestDeactivateLumaRouteNotDeployedIsNotAFailure covers the staged-rollout
+// case: the companion backend route may not be deployed yet when this
+// service is, and that must not turn an otherwise-successful Google/
+// Mattermost deactivation into a reported failure. Mirrors
+// TestDeactivateNoMattermostAccountIsNotAFailure's "specific condition is a
+// benign no-op" shape, one layer over in backendclient.
+func TestDeactivateLumaRouteNotDeployedIsNotAFailure(t *testing.T) {
+	google := &fakeDeprovisioner{}
+	mm := &fakeMattermostServer{}
+	backend := &fakeBackendServer{lumaRouteNotDeployed: true}
+	svc := NewService(google, mm.client(t), backend.client(t))
+
+	err := svc.Deactivate(context.Background(), "grace@kthais.com")
+	require.NoError(t, err, "a 404 from a not-yet-deployed Luma route is a rollout no-op, not a failure")
+	require.Equal(t, []string{"grace@kthais.com"}, google.suspended, "the google side must still run")
+	require.Equal(t, 1, mm.deleteCalls, "the mattermost side must still run")
+}
+
 func TestDeleteHappyPath(t *testing.T) {
 	google := &fakeDeprovisioner{}
 	mm := &fakeMattermostServer{}
@@ -211,4 +234,21 @@ func TestDeleteLumaFailureJoinsWithoutSuppressingOthers(t *testing.T) {
 	require.Contains(t, err.Error(), "google:")
 	require.Contains(t, err.Error(), "luma:")
 	require.Equal(t, 1, mm.deleteCalls, "mattermost must still be attempted even though google and luma both failed")
+}
+
+// TestDeleteLumaRouteNotDeployedIsNotAFailure mirrors
+// TestDeactivateLumaRouteNotDeployedIsNotAFailure for Delete — this is also
+// the case that matters for OffboardingHandler.Delete's own record
+// bookkeeping (see offboarding_handler_test.go): Delete must return nil
+// here so the caller still marks the onboarding record offboarded.
+func TestDeleteLumaRouteNotDeployedIsNotAFailure(t *testing.T) {
+	google := &fakeDeprovisioner{}
+	mm := &fakeMattermostServer{}
+	backend := &fakeBackendServer{lumaRouteNotDeployed: true}
+	svc := NewService(google, mm.client(t), backend.client(t))
+
+	err := svc.Delete(context.Background(), "grace@kthais.com")
+	require.NoError(t, err, "a 404 from a not-yet-deployed Luma route is a rollout no-op, not a failure")
+	require.Equal(t, []string{"grace@kthais.com"}, google.deleted, "the google side must still run")
+	require.Equal(t, 1, mm.deleteCalls, "the mattermost side must still run")
 }

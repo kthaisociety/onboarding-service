@@ -10,12 +10,19 @@ package backendclient
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"onboarding-service/internal/config"
 )
+
+// ErrRouteNotFound wraps the error post returns when the backend responds
+// 404, distinguishable via errors.Is from any other failure — lets a caller
+// whose companion backend route may not be deployed yet (a staged rollout)
+// choose to tolerate it, unlike a real failure.
+var ErrRouteNotFound = errors.New("backend route not found")
 
 type Client struct {
 	cfg        *config.Config
@@ -86,9 +93,17 @@ type removeFromLumaRequest struct {
 // RemoveFromLumaMembers removes email from Luma's "Members" tier via the
 // backend, same credential-sharing reasoning as AddToLumaMembers. Called by
 // offboarding.Service.Deactivate/Delete, attempted alongside the Google/
-// Mattermost steps there regardless of whether those succeed.
+// Mattermost steps there regardless of whether those succeed. Tolerates
+// ErrRouteNotFound as a rollout-compatible no-op: if the companion backend
+// route isn't deployed yet, that's not a reason to fail an otherwise-
+// successful Google/Mattermost offboarding — any other status (a route
+// that exists but is erroring) still returns as a real error.
 func (c *Client) RemoveFromLumaMembers(email string) error {
-	return c.post("/internal/onboarding/remove-from-luma", removeFromLumaRequest{Email: email})
+	err := c.post("/internal/onboarding/remove-from-luma", removeFromLumaRequest{Email: email})
+	if errors.Is(err, ErrRouteNotFound) {
+		return nil
+	}
+	return err
 }
 
 func (c *Client) post(path string, body any) error {
@@ -114,6 +129,9 @@ func (c *Client) post(path string, body any) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("backend returned 404 for %s: %w", path, ErrRouteNotFound)
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("backend returned %d for %s", resp.StatusCode, path)
 	}
