@@ -9,13 +9,21 @@ package backendclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"onboarding-service/internal/config"
 )
+
+// ErrRouteNotFound wraps the error post returns when the backend responds
+// 404, distinguishable via errors.Is from any other failure — lets a caller
+// whose companion backend route may not be deployed yet (a staged rollout)
+// choose to tolerate it, unlike a real failure.
+var ErrRouteNotFound = errors.New("backend route not found")
 
 type Client struct {
 	cfg        *config.Config
@@ -72,15 +80,45 @@ type addToLumaRequest struct {
 }
 
 // AddToLumaMembers adds email to Luma's "Members" tier via the backend,
-// which already holds the org's Luma API key for its own newsletter-signup
-// integration (internal/luma) — this service deliberately doesn't get its
-// own separate Luma credential, same reasoning as reusing the backend's SES
-// setup for emails above.
+// which already holds the org's Luma API key (internal/luma) — this
+// service deliberately doesn't get its own separate Luma credential, same
+// reasoning as reusing the backend's SES setup for emails above.
 func (c *Client) AddToLumaMembers(email string) error {
 	return c.post("/internal/onboarding/add-to-luma", addToLumaRequest{Email: email})
 }
 
+type removeFromLumaRequest struct {
+	Email string `json:"email"`
+}
+
+// RemoveFromLumaMembers removes email from Luma's "Members" tier via the
+// backend, same credential-sharing reasoning as AddToLumaMembers. Called by
+// offboarding.Service.Deactivate/Delete, attempted alongside the Google/
+// Mattermost steps there regardless of whether those succeed. Takes ctx
+// (unlike this file's other methods) so cancelling the caller actually
+// stops the request instead of only being bounded by httpClient's own
+// blanket timeout. Tolerates ErrRouteNotFound as a rollout-compatible
+// no-op: if the companion backend route isn't deployed yet, that's not a
+// reason to fail an otherwise-successful Google/Mattermost offboarding —
+// any other status (a route that exists but is erroring) still returns as
+// a real error.
+func (c *Client) RemoveFromLumaMembers(ctx context.Context, email string) error {
+	err := c.postCtx(ctx, "/internal/onboarding/remove-from-luma", removeFromLumaRequest{Email: email})
+	if errors.Is(err, ErrRouteNotFound) {
+		return nil
+	}
+	return err
+}
+
 func (c *Client) post(path string, body any) error {
+	return c.postCtx(context.Background(), path, body)
+}
+
+// postCtx is post with an explicit context, for callers (currently just
+// RemoveFromLumaMembers) whose caller may cancel or time out and expects
+// that to actually stop the request, not just bound it by httpClient's own
+// blanket timeout.
+func (c *Client) postCtx(ctx context.Context, path string, body any) error {
 	if c.cfg.BackendURL == "" {
 		return fmt.Errorf("BACKEND_URL is not configured")
 	}
@@ -90,7 +128,7 @@ func (c *Client) post(path string, body any) error {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.cfg.BackendURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.BackendURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to build request: %w", err)
 	}
@@ -103,6 +141,9 @@ func (c *Client) post(path string, body any) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("backend returned 404 for %s: %w", path, ErrRouteNotFound)
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("backend returned %d for %s", resp.StatusCode, path)
 	}

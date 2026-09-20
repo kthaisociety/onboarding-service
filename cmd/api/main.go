@@ -76,7 +76,7 @@ func main() {
 	}
 
 	provisioningService := provisioning.NewService(db, googleClient, mattermostClient, backend)
-	offboardingService := offboarding.NewService(googleClient, mattermostClient)
+	offboardingService := offboarding.NewService(googleClient, mattermostClient, backend)
 
 	// One-shot reachability check against the backend, logged at boot only —
 	// not a recurring healthcheck. Purpose is to surface a misconfigured

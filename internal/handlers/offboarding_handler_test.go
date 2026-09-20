@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
 	"onboarding-service/internal/mattermost"
 	"onboarding-service/internal/models"
@@ -48,13 +49,24 @@ func TestOffboardingHandler(t *testing.T) {
 	}))
 	t.Cleanup(mmServer.Close)
 
+	// Fake backend server that always succeeds the one endpoint this
+	// handler's offboarding.Service calls — real Luma removal behavior is
+	// covered by internal/offboarding's own tests; this one stays focused
+	// on the HTTP layer (secret gating, validation).
+	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(backendServer.Close)
+
 	cfg := &config.Config{
 		OnboardingServiceSecret: "test-secret",
 		MattermostURL:           mmServer.URL,
 		MattermostBotToken:      "test-bot-token",
+		BackendURL:              backendServer.URL,
 	}
 	mm := mattermost.New(cfg)
-	svc := offboarding.NewService(noopDeprovisioner{}, mm)
+	backend := backendclient.New(cfg)
+	svc := offboarding.NewService(noopDeprovisioner{}, mm, backend)
 	db := newTestOffboardingDB(t)
 
 	gin.SetMode(gin.TestMode)
@@ -149,4 +161,62 @@ func TestOffboardingHandler(t *testing.T) {
 		rec := post("/internal/offboarding/delete", "test-secret", map[string]any{"email": "no-record@kthais.com"})
 		require.Equal(t, http.StatusOK, rec.Code)
 	})
+}
+
+// TestDeleteMarksRecordOffboardedEvenWhenLumaRouteNotDeployed is a
+// regression for the bookkeeping-ordering half of the Luma-rollout gap: it
+// needs its own backend fixture (a 404 for the Luma-removal route,
+// unlike TestOffboardingHandler's always-succeeding one above) to prove
+// that a not-yet-deployed companion route — which backendclient now treats
+// as a no-op rather than an error — doesn't stop Delete's own success
+// response (200) or its onboarding-record bookkeeping, given Google and
+// Mattermost both still succeeded.
+func TestDeleteMarksRecordOffboardedEvenWhenLumaRouteNotDeployed(t *testing.T) {
+	mmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(mmServer.Close)
+
+	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(backendServer.Close)
+
+	cfg := &config.Config{
+		OnboardingServiceSecret: "test-secret",
+		MattermostURL:           mmServer.URL,
+		MattermostBotToken:      "test-bot-token",
+		BackendURL:              backendServer.URL,
+	}
+	mm := mattermost.New(cfg)
+	backend := backendclient.New(cfg)
+	svc := offboarding.NewService(noopDeprovisioner{}, mm, backend)
+	db := newTestOffboardingDB(t)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	NewOffboardingHandler(db, cfg, svc).Register(engine.Group("/"))
+
+	require.NoError(t, db.Create(&models.OnboardingRecord{
+		FirstName:     "Grace",
+		LastName:      "Hopper",
+		PersonalEmail: "grace@example.com",
+		AssignedTeam:  "Development",
+		State:         models.StateComplete,
+		KthaisEmail:   "grace@kthais.com",
+	}).Error)
+
+	payload, err := json.Marshal(map[string]any{"email": "grace@kthais.com"})
+	require.NoError(t, err)
+	req := httptest.NewRequest("POST", "/internal/offboarding/delete", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Service-Secret", "test-secret")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "a not-yet-deployed Luma route must not turn an otherwise-successful delete into a 502")
+
+	var record models.OnboardingRecord
+	require.NoError(t, db.Where("kthais_email = ?", "grace@kthais.com").First(&record).Error)
+	require.Equal(t, models.StateOffboarded, record.State, "bookkeeping must still run even though the Luma route 404s")
 }
