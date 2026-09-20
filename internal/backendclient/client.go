@@ -9,6 +9,7 @@ package backendclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,13 +94,16 @@ type removeFromLumaRequest struct {
 // RemoveFromLumaMembers removes email from Luma's "Members" tier via the
 // backend, same credential-sharing reasoning as AddToLumaMembers. Called by
 // offboarding.Service.Deactivate/Delete, attempted alongside the Google/
-// Mattermost steps there regardless of whether those succeed. Tolerates
-// ErrRouteNotFound as a rollout-compatible no-op: if the companion backend
-// route isn't deployed yet, that's not a reason to fail an otherwise-
-// successful Google/Mattermost offboarding — any other status (a route
-// that exists but is erroring) still returns as a real error.
-func (c *Client) RemoveFromLumaMembers(email string) error {
-	err := c.post("/internal/onboarding/remove-from-luma", removeFromLumaRequest{Email: email})
+// Mattermost steps there regardless of whether those succeed. Takes ctx
+// (unlike this file's other methods) so cancelling the caller actually
+// stops the request instead of only being bounded by httpClient's own
+// blanket timeout. Tolerates ErrRouteNotFound as a rollout-compatible
+// no-op: if the companion backend route isn't deployed yet, that's not a
+// reason to fail an otherwise-successful Google/Mattermost offboarding —
+// any other status (a route that exists but is erroring) still returns as
+// a real error.
+func (c *Client) RemoveFromLumaMembers(ctx context.Context, email string) error {
+	err := c.postCtx(ctx, "/internal/onboarding/remove-from-luma", removeFromLumaRequest{Email: email})
 	if errors.Is(err, ErrRouteNotFound) {
 		return nil
 	}
@@ -107,6 +111,14 @@ func (c *Client) RemoveFromLumaMembers(email string) error {
 }
 
 func (c *Client) post(path string, body any) error {
+	return c.postCtx(context.Background(), path, body)
+}
+
+// postCtx is post with an explicit context, for callers (currently just
+// RemoveFromLumaMembers) whose caller may cancel or time out and expects
+// that to actually stop the request, not just bound it by httpClient's own
+// blanket timeout.
+func (c *Client) postCtx(ctx context.Context, path string, body any) error {
 	if c.cfg.BackendURL == "" {
 		return fmt.Errorf("BACKEND_URL is not configured")
 	}
@@ -116,7 +128,7 @@ func (c *Client) post(path string, body any) error {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.cfg.BackendURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.BackendURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to build request: %w", err)
 	}

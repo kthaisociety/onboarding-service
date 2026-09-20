@@ -46,7 +46,7 @@ func (s *Service) Deactivate(ctx context.Context, email string) error {
 	if err := s.mattermost.DeactivateUser(email); err != nil {
 		errs = append(errs, fmt.Errorf("mattermost: %w", err))
 	}
-	if err := s.backend.RemoveFromLumaMembers(email); err != nil {
+	if err := s.backend.RemoveFromLumaMembers(ctx, email); err != nil {
 		errs = append(errs, fmt.Errorf("luma: %w", err))
 	}
 	return errors.Join(errs...)
@@ -68,7 +68,7 @@ func (s *Service) Delete(ctx context.Context, email string) error {
 	if err := s.mattermost.DeleteUserPermanently(email); err != nil {
 		errs = append(errs, fmt.Errorf("mattermost: %w", err))
 	}
-	if err := s.backend.RemoveFromLumaMembers(email); err != nil {
+	if err := s.backend.RemoveFromLumaMembers(ctx, email); err != nil {
 		errs = append(errs, fmt.Errorf("luma: %w", err))
 	}
 	return errors.Join(errs...)

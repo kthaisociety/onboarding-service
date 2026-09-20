@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
@@ -251,4 +252,36 @@ func TestDeleteLumaRouteNotDeployedIsNotAFailure(t *testing.T) {
 	require.NoError(t, err, "a 404 from a not-yet-deployed Luma route is a rollout no-op, not a failure")
 	require.Equal(t, []string{"grace@kthais.com"}, google.deleted, "the google side must still run")
 	require.Equal(t, 1, mm.deleteCalls, "the mattermost side must still run")
+}
+
+// TestDeactivateLumaRequestStopsOnContextCancellation proves ctx is
+// actually threaded through to the Luma HTTP call (not just accepted and
+// ignored): a canceled context must abort the request quickly rather than
+// running it to completion against a slow backend.
+func TestDeactivateLumaRequestStopsOnContextCancellation(t *testing.T) {
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block // never responds until the test cleans up
+	}))
+	t.Cleanup(server.Close)
+	backend := backendclient.New(&config.Config{BackendURL: server.URL, OnboardingServiceSecret: "test-secret"})
+
+	google := &fakeDeprovisioner{}
+	mm := &fakeMattermostServer{}
+	svc := NewService(google, mm.client(t), backend)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.Deactivate(ctx, "grace@kthais.com") }()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "a canceled Luma request must surface as an error, not hang or silently succeed")
+		require.Contains(t, err.Error(), "luma:")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Deactivate did not return promptly after its context was canceled — ctx is not actually threaded through to the Luma request")
+	}
 }
