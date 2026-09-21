@@ -150,6 +150,45 @@ func TestDeactivateNoMattermostAccountIsNotAFailure(t *testing.T) {
 	require.Equal(t, 0, mm.deleteCalls, "nothing to delete after a 404 lookup")
 }
 
+// TestDeactivateGoogleFailureStillChecksMattermostAndLuma pins down the
+// exact scenario Deactivate must never regress to: a Google failure (e.g.
+// a 403 from a revoked/expired credential) must not short-circuit the
+// Mattermost and Luma steps. Unlike TestDeactivateLumaFailureJoinsWithout
+// SuppressingOthers, this only fails Google, so it can also assert the
+// Mattermost/Luma steps actually *succeeded* (removeFromLumaCalls
+// populated), not just that they were attempted.
+func TestDeactivateGoogleFailureStillChecksMattermostAndLuma(t *testing.T) {
+	google := &fakeDeprovisioner{failSuspend: true}
+	mm := &fakeMattermostServer{}
+	backend := &fakeBackendServer{}
+	svc := NewService(google, mm.client(t), backend.client(t))
+
+	err := svc.Deactivate(context.Background(), "grace@kthais.com")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "google:")
+	require.Equal(t, 1, mm.deleteCalls, "a google failure must not skip the mattermost step")
+	require.Equal(t, []string{"grace@kthais.com"}, backend.removeFromLumaCalls, "a google failure must not skip the luma step")
+}
+
+// TestDeactivateRetryAfterPartialFailureSucceeds proves Deactivate is safe
+// to call again after a partial failure: retrying with the previously
+// failing step now fixed must reach a clean success, not re-report the
+// steps that already succeeded on the first attempt as new failures.
+func TestDeactivateRetryAfterPartialFailureSucceeds(t *testing.T) {
+	google := &fakeDeprovisioner{}
+	mm := &fakeMattermostServer{failDelete: true}
+	backend := &fakeBackendServer{}
+	svc := NewService(google, mm.client(t), backend.client(t))
+
+	err := svc.Deactivate(context.Background(), "grace@kthais.com")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mattermost:")
+
+	mm.failDelete = false
+	err = svc.Deactivate(context.Background(), "grace@kthais.com")
+	require.NoError(t, err, "retrying after the failing step is fixed must succeed cleanly")
+}
+
 // TestDeactivateLumaFailureJoinsWithoutSuppressingOthers covers the same
 // "attempt every step, join every error" contract Deactivate already had
 // for Google/Mattermost, now extended to the third Luma step: a Luma

@@ -72,41 +72,42 @@ func (c *Client) BaseURL() string {
 }
 
 // mattermostUser is the subset of Mattermost's User object this package
-// actually needs — just enough to resolve an email to the user_id the
-// deactivate/delete endpoints are keyed by.
+// actually needs: the user_id the deactivate/delete endpoints are keyed
+// by, plus DeleteAt (non-zero once the account has been deactivated or
+// deleted) so DeactivateUser can tell "already deactivated" apart from
+// "currently active" without having to interpret a deactivate-call error.
 type mattermostUser struct {
-	ID string `json:"id"`
+	ID       string `json:"id"`
+	DeleteAt int64  `json:"delete_at"`
 }
 
-// userIDByEmail looks up a Mattermost user's ID by email. found is false
-// (with a nil error) when no such user exists — a normal, non-error
-// outcome for offboarding, e.g. someone who never actually joined
-// Mattermost.
-func (c *Client) userIDByEmail(email string) (id string, found bool, err error) {
+// userByEmail looks up a Mattermost user by email. found is false (with a
+// nil error) when no such user exists — a normal, non-error outcome for
+// offboarding, e.g. someone who never actually joined Mattermost.
+func (c *Client) userByEmail(email string) (user mattermostUser, found bool, err error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v4/users/email/"+url.PathEscape(email), nil)
 	if err != nil {
-		return "", false, fmt.Errorf("failed to build user lookup request: %w", err)
+		return mattermostUser{}, false, fmt.Errorf("failed to build user lookup request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.botToken)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", false, fmt.Errorf("user lookup request for %s failed: %w", email, err)
+		return mattermostUser{}, false, fmt.Errorf("user lookup request for %s failed: %w", email, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return "", false, nil
+		return mattermostUser{}, false, nil
 	}
 	if resp.StatusCode >= 300 {
-		return "", false, fmt.Errorf("mattermost returned %d looking up %s%s", resp.StatusCode, email, describeError(resp))
+		return mattermostUser{}, false, fmt.Errorf("mattermost returned %d looking up %s%s", resp.StatusCode, email, describeError(resp))
 	}
 
-	var user mattermostUser
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return "", false, fmt.Errorf("failed to decode user lookup response for %s: %w", email, err)
+		return mattermostUser{}, false, fmt.Errorf("failed to decode user lookup response for %s: %w", email, err)
 	}
-	return user.ID, true, nil
+	return user, true, nil
 }
 
 func (c *Client) deleteUser(userID, email string, permanent bool) error {
@@ -134,16 +135,20 @@ func (c *Client) deleteUser(userID, email string, permanent bool) error {
 
 // DeactivateUser deactivates (soft-deletes) the Mattermost account for
 // email — reversible any time from System Console → User Management →
-// Users → Activate. A no-op if no Mattermost account exists for email.
+// Users → Activate. A no-op if no Mattermost account exists for email, or
+// if it's already deactivated (DeleteAt != 0) — checked up front rather
+// than just calling deleteUser and hoping a re-deactivate is harmless, same
+// "verify the state we're trying to reach isn't already true" reasoning as
+// googleworkspace.Client.SuspendUser.
 func (c *Client) DeactivateUser(email string) error {
-	userID, found, err := c.userIDByEmail(email)
+	user, found, err := c.userByEmail(email)
 	if err != nil {
 		return err
 	}
-	if !found {
+	if !found || user.DeleteAt != 0 {
 		return nil
 	}
-	return c.deleteUser(userID, email, false)
+	return c.deleteUser(user.ID, email, false)
 }
 
 // DeleteUserPermanently permanently deletes the Mattermost account for
@@ -159,14 +164,14 @@ func (c *Client) DeactivateUser(email string) error {
 // returned includes Mattermost's own message via describeError, so the
 // real reason is visible rather than a bare status code.
 func (c *Client) DeleteUserPermanently(email string) error {
-	userID, found, err := c.userIDByEmail(email)
+	user, found, err := c.userByEmail(email)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return nil
 	}
-	return c.deleteUser(userID, email, true)
+	return c.deleteUser(user.ID, email, true)
 }
 
 // Ping is a one-shot, non-fatal reachability check logged at boot only —

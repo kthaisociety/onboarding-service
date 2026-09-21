@@ -52,6 +52,35 @@ func TestDeactivateUserNoSuchUserIsANoOp(t *testing.T) {
 	require.False(t, deleteCalled, "there's nothing to delete if the lookup found no user")
 }
 
+// TestDeactivateUserAlreadyDeactivatedIsANoOp mirrors
+// TestDeactivateUserNoSuchUserIsANoOp for the other "nothing to do" case:
+// a user whose delete_at is already non-zero. Without this check,
+// re-deactivating an already-deactivated user would depend on Mattermost
+// treating a repeat DELETE as harmless — the same assumption that turned
+// out false for Google's equivalent call (see
+// googleworkspace.Client.SuspendUser's doc comment), so this is checked
+// explicitly rather than trusted.
+func TestDeactivateUserAlreadyDeactivatedIsANoOp(t *testing.T) {
+	var deleteCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"user-123","delete_at":1700000000000}`))
+		case r.Method == http.MethodDelete:
+			deleteCalled = true
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(&config.Config{MattermostURL: server.URL, MattermostBotToken: "test-bot-token"})
+	err := client.DeactivateUser("grace@kthais.com")
+	require.NoError(t, err)
+	require.False(t, deleteCalled, "already deactivated — nothing to do")
+}
+
 func TestDeleteUserPermanently(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
