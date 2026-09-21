@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
@@ -214,9 +215,22 @@ func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword 
 	// this doesn't mint a per-record token the way the other emails' links
 	// do: Google's own domain-restricted sharing is the auth here, so
 	// there's nothing for this service to issue or serve itself.
-	contractSubject, contractBody := emailcontent.BuildContract(settings.ContractIntroText, record.FirstName, settings.BylawsURL, settings.LumaKickoffURL)
-	if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, settings.ContractURL, emailcontent.ContractButtonText); err != nil {
-		return fmt.Errorf("contract email: %w", err)
+	//
+	// Skipped entirely (not an error) while ContractURL is unset: the base
+	// email template falls back to a mailto "Contact us" link for an empty
+	// button URL, but ContractButtonText ("View your contract") is always
+	// non-empty, so an unset URL would otherwise render a button that
+	// claims to open the contract and silently opens a contact-us email
+	// instead. An admin hasn't finished configuring this email yet, not a
+	// failure — same "expected until configured" idiom as
+	// notifyOnboardingService skipping when OnboardingServiceURL is unset.
+	if strings.TrimSpace(settings.ContractURL) == "" {
+		log.Printf("sendFinalEmails: skipping contract email for record %d — no contract_url configured yet", record.ID)
+	} else {
+		contractSubject, contractBody := emailcontent.BuildContract(settings.ContractIntroText, record.FirstName, settings.BylawsURL, settings.LumaKickoffURL)
+		if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, settings.ContractURL, emailcontent.ContractButtonText); err != nil {
+			return fmt.Errorf("contract email: %w", err)
+		}
 	}
 
 	return nil

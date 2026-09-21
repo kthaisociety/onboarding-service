@@ -229,6 +229,17 @@ func TestNotify(t *testing.T) {
 func TestPortalFlow(t *testing.T) {
 	engine, cfg, fake := newTestServer(t)
 
+	// ContractURL configured up front — this test exercises the full
+	// five-email flow; the contract email would otherwise be skipped as
+	// "not configured yet" (see provisioning.Service.sendFinalEmails' own
+	// doc comment, and provisioning.TestProvisionSkipsContractEmailWhenURLUnset
+	// for that case).
+	settingsRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
+		"contract_url":     "https://drive.google.com/file/d/contract/view",
+		"updated_by_email": "admin@kthais.com",
+	}, cfg.OnboardingServiceSecret)
+	require.Equal(t, http.StatusOK, settingsRec.Code)
+
 	notifyRec := doJSON(t, engine, "POST", "/notify", map[string]string{
 		"application_id": "app-flow",
 		"first_name":     "Grace",
