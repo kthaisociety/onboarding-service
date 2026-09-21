@@ -860,28 +860,40 @@ func TestEmailSettings(t *testing.T) {
 		require.Contains(t, body["body"], "Come say hi in #general!")
 	})
 
-	t.Run("contract preview uses the saved contract/bylaws/Luma links, never fakes", func(t *testing.T) {
+	t.Run("contract preview reflects the request's own contract/bylaws/Luma links, not saved settings", func(t *testing.T) {
+		// Deliberately save different links than the ones the preview
+		// request below sends — proves the preview renders the caller's
+		// live draft, not whatever's already persisted (Greptile flagged
+		// the opposite behavior as a bug: an admin editing a link and
+		// clicking Preview before Save must see their edit, not the stale
+		// saved value).
 		saveRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
-			"contract_url":     "https://drive.google.com/file/d/contract-template/view",
-			"bylaws_url":       "https://kthais.com/bylaws.pdf",
-			"luma_kickoff_url": "https://lu.ma/kickoff",
+			"contract_url":     "https://drive.google.com/file/d/stale-saved-contract/view",
+			"bylaws_url":       "https://kthais.com/stale-bylaws.pdf",
+			"luma_kickoff_url": "https://lu.ma/stale-kickoff",
 			"updated_by_email": "admin@kthais.com",
 		}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, saveRec.Code)
 
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
-			"kind": "contract", "intro_text": "Please read ahead of the kick-off, {{first_name}}!",
+			"kind":             "contract",
+			"intro_text":       "Please read ahead of the kick-off, {{first_name}}!",
+			"contract_url":     "https://drive.google.com/file/d/draft-contract/view",
+			"bylaws_url":       "https://kthais.com/draft-bylaws.pdf",
+			"luma_kickoff_url": "https://lu.ma/draft-kickoff",
 		}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, rec.Code)
 		var body map[string]string
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		require.Equal(t, emailcontent.ContractSubject, body["subject"])
 		require.Contains(t, body["body"], "Please read ahead of the kick-off, "+emailcontent.PreviewFirstName+"!")
-		require.Contains(t, body["body"], "https://kthais.com/bylaws.pdf")
-		require.Contains(t, body["body"], "https://lu.ma/kickoff")
-		// The contract button is now just the admin-set link, same as
-		// mattermost's — no per-record token minted or substituted.
-		require.Equal(t, "https://drive.google.com/file/d/contract-template/view", body["button_url"])
+		require.Contains(t, body["body"], "https://kthais.com/draft-bylaws.pdf")
+		require.Contains(t, body["body"], "https://lu.ma/draft-kickoff")
+		require.NotContains(t, body["body"], "stale-bylaws")
+		require.NotContains(t, body["body"], "stale-kickoff")
+		// The contract button is just whatever link the request sent, same
+		// as mattermost's fixed button — no per-record token minted.
+		require.Equal(t, "https://drive.google.com/file/d/draft-contract/view", body["button_url"])
 		require.Equal(t, emailcontent.ContractButtonText, body["button_text"])
 	})
 

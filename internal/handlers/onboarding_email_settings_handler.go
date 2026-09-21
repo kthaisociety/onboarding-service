@@ -118,6 +118,15 @@ func (h *EmailSettingsHandler) Update(c *gin.Context) {
 type previewEmailSettingsRequest struct {
 	Kind      string `json:"kind"`
 	IntroText string `json:"intro_text"`
+	// ContractURL/BylawsURL/LumaKickoffURL are only read for kind=contract.
+	// Deliberately sent by the caller on every preview request (the admin
+	// panel's own unsaved draft state) rather than loaded from this
+	// service's saved settings — a preview must reflect what the admin is
+	// looking at right now, including an edited-but-not-yet-saved link, not
+	// silently fall back to whatever was last persisted.
+	ContractURL    string `json:"contract_url"`
+	BylawsURL      string `json:"bylaws_url"`
+	LumaKickoffURL string `json:"luma_kickoff_url"`
 }
 
 // Preview builds the exact subject/body the matching Build* function would
@@ -125,8 +134,9 @@ type previewEmailSettingsRequest struct {
 // panel's preview can never drift from what a real send would produce.
 // kind selects which of the five onboarding emails to render; the account
 // email is rendered with sample credentials, never real data; contract is
-// rendered with the currently saved ContractURL/BylawsURL/LumaKickoffURL,
-// since those are real admin-set links, not per-preview fakes.
+// rendered from the request's own ContractURL/BylawsURL/LumaKickoffURL (the
+// admin panel's live draft — see previewEmailSettingsRequest's doc comment)
+// rather than this service's saved settings.
 //
 // Also returns the button this email would actually carry — account,
 // mattermost, and contract all have a fixed button once configured (see
@@ -158,13 +168,8 @@ func (h *EmailSettingsHandler) Preview(c *gin.Context) {
 		subject, body = emailcontent.BuildMattermost(req.IntroText, emailcontent.PreviewFirstName)
 		buttonURL, buttonText = h.cfg.MattermostURL, emailcontent.MattermostButtonText
 	case "contract":
-		settings, err := emailcontent.Load(h.db)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load email settings"})
-			return
-		}
-		subject, body = emailcontent.BuildContract(req.IntroText, emailcontent.PreviewFirstName, settings.BylawsURL, settings.LumaKickoffURL)
-		buttonURL, buttonText = settings.ContractURL, emailcontent.ContractButtonText
+		subject, body = emailcontent.BuildContract(req.IntroText, emailcontent.PreviewFirstName, req.BylawsURL, req.LumaKickoffURL)
+		buttonURL, buttonText = req.ContractURL, emailcontent.ContractButtonText
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost, contract"})
 		return
