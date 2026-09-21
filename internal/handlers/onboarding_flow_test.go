@@ -911,6 +911,20 @@ func TestEmailSettings(t *testing.T) {
 		require.Equal(t, emailcontent.KickoffRSVPButtonText, body["button_text"])
 	})
 
+	t.Run("contract preview never renders a dangling label for a whitespace-only link", func(t *testing.T) {
+		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
+			"kind":         "contract",
+			"intro_text":   "whatever",
+			"contract_url": "   ",
+			"bylaws_url":   "   ",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.NotContains(t, body["body"], "Contract:")
+		require.NotContains(t, body["body"], "Bylaws:")
+	})
+
 	t.Run("unknown kind is rejected", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
 			"kind": "bogus", "intro_text": "whatever",

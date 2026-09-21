@@ -219,11 +219,16 @@ func BuildContract(introText, firstName, contractURL, bylawsURL string) (subject
 	intro := substitute(introText, firstName, "")
 
 	body = "Hi " + firstName + ",\n\n" + intro
-	if contractURL != "" {
-		body += "\n\nContract: " + contractURL
+	// TrimSpace, not a bare emptiness check: Save already trims on write,
+	// but Preview passes the admin panel's live draft straight through
+	// without going through Save first, so a whitespace-only value here
+	// would otherwise render a dangling "Contract: " line with nothing
+	// visible after it.
+	if trimmed := strings.TrimSpace(contractURL); trimmed != "" {
+		body += "\n\nContract: " + trimmed
 	}
-	if bylawsURL != "" {
-		body += "\n\nBylaws: " + bylawsURL
+	if trimmed := strings.TrimSpace(bylawsURL); trimmed != "" {
+		body += "\n\nBylaws: " + trimmed
 	}
 	return ContractSubject, body
 }
