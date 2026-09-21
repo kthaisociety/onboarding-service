@@ -93,13 +93,12 @@ const StartPortalTokenValidity = 14 * 24 * time.Hour
 const ConfirmKthEmailTokenValidity = 24 * time.Hour
 
 // ContractDownloadTokenValidity governs how long the contract email's
-// download link stays valid. Deliberately long, unlike the two tokens
-// above: a member may not get around to signing and returning it right
-// away, and this token is never consumed on use (see
-// models.PurposeContractDownload), so a generous window just means the same
-// link keeps working next time they need it, not that it sits open for
-// abuse the way an unused single-use token would.
-const ContractDownloadTokenValidity = 365 * 24 * time.Hour
+// download link stays valid — long enough to cover the run-up to the
+// kick-off event (where the contract is actually signed, in person; this
+// link is only for reading it in advance), not indefinitely. This token is
+// never consumed on use (see models.PurposeContractDownload), so within
+// that window the same link keeps working across repeat visits.
+const ContractDownloadTokenValidity = 7 * 24 * time.Hour
 
 func LoadConfig() *Config {
 	cfg := &Config{
