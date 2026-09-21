@@ -125,7 +125,7 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 
 	backend := backendclient.New(cfg)
 	mm := mattermost.New(cfg)
-	provisioningService := provisioning.NewService(db, newFakeGoogle(), mm, backend)
+	provisioningService := provisioning.NewService(db, cfg, newFakeGoogle(), mm, backend)
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -229,6 +229,17 @@ func TestNotify(t *testing.T) {
 func TestPortalFlow(t *testing.T) {
 	engine, cfg, fake := newTestServer(t)
 
+	// ContractURL configured up front — this test exercises the full
+	// five-email flow; the contract email would otherwise be skipped as
+	// "not configured yet" (see provisioning.Service.sendFinalEmails' own
+	// doc comment, and provisioning.TestProvisionSkipsContractEmailWhenURLUnset
+	// for that case).
+	settingsRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
+		"contract_url":     "https://drive.google.com/file/d/contract/view",
+		"updated_by_email": "admin@kthais.com",
+	}, cfg.OnboardingServiceSecret)
+	require.Equal(t, http.StatusOK, settingsRec.Code)
+
 	notifyRec := doJSON(t, engine, "POST", "/notify", map[string]string{
 		"application_id": "app-flow",
 		"first_name":     "Grace",
@@ -315,7 +326,7 @@ func TestPortalFlow(t *testing.T) {
 		require.Equal(t, models.StateComplete, record.State)
 		require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
 
-		require.Len(t, fake.sentEmails, 4, "start-portal, confirm, account-info, mattermost getting-started")
+		require.Len(t, fake.sentEmails, 5, "start-portal, confirm, account-info, mattermost getting-started, contract")
 		require.Len(t, fake.recordedAccounts, 1)
 		require.Equal(t, "grace.hopper@kthais.com", fake.recordedAccounts[0]["kthais_email"])
 	})
@@ -803,6 +814,7 @@ func TestEmailSettings(t *testing.T) {
 		require.Equal(t, emailcontent.DefaultStartIntro, body["start_intro_text"])
 		require.Equal(t, emailcontent.DefaultConfirmIntro, body["confirm_intro_text"])
 		require.Equal(t, emailcontent.DefaultMattermostIntro, body["mattermost_intro_text"])
+		require.Equal(t, emailcontent.DefaultContractIntro, body["contract_intro_text"])
 		// The account email has no non-empty default — it has no intro
 		// paragraph at all until an admin adds one.
 		require.Equal(t, "", body["account_intro_text"])
@@ -859,6 +871,43 @@ func TestEmailSettings(t *testing.T) {
 		require.Contains(t, body["body"], "Come say hi in #general!")
 	})
 
+	t.Run("contract preview reflects the request's own contract/bylaws/Luma links, not saved settings", func(t *testing.T) {
+		// Deliberately save different links than the ones the preview
+		// request below sends — proves the preview renders the caller's
+		// live draft, not whatever's already persisted (Greptile flagged
+		// the opposite behavior as a bug: an admin editing a link and
+		// clicking Preview before Save must see their edit, not the stale
+		// saved value).
+		saveRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
+			"contract_url":     "https://drive.google.com/file/d/stale-saved-contract/view",
+			"bylaws_url":       "https://kthais.com/stale-bylaws.pdf",
+			"luma_kickoff_url": "https://lu.ma/stale-kickoff",
+			"updated_by_email": "admin@kthais.com",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, saveRec.Code)
+
+		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
+			"kind":             "contract",
+			"intro_text":       "Please read ahead of the kick-off, {{first_name}}!",
+			"contract_url":     "https://drive.google.com/file/d/draft-contract/view",
+			"bylaws_url":       "https://kthais.com/draft-bylaws.pdf",
+			"luma_kickoff_url": "https://lu.ma/draft-kickoff",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, emailcontent.ContractSubject, body["subject"])
+		require.Contains(t, body["body"], "Please read ahead of the kick-off, "+emailcontent.PreviewFirstName+"!")
+		require.Contains(t, body["body"], "https://kthais.com/draft-bylaws.pdf")
+		require.Contains(t, body["body"], "https://lu.ma/draft-kickoff")
+		require.NotContains(t, body["body"], "stale-bylaws")
+		require.NotContains(t, body["body"], "stale-kickoff")
+		// The contract button is just whatever link the request sent, same
+		// as mattermost's fixed button — no per-record token minted.
+		require.Equal(t, "https://drive.google.com/file/d/draft-contract/view", body["button_url"])
+		require.Equal(t, emailcontent.ContractButtonText, body["button_text"])
+	})
+
 	t.Run("unknown kind is rejected", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
 			"kind": "bogus", "intro_text": "whatever",
@@ -872,6 +921,7 @@ func TestEmailSettings(t *testing.T) {
 			"confirm_intro_text":    "One more step, {{first_name}}!",
 			"account_intro_text":    "Welcome aboard, {{first_name}}!",
 			"mattermost_intro_text": "Say hi in #general, {{first_name}}.",
+			"contract_url":          "https://drive.google.com/file/d/contract-2026/view",
 			"updated_by_email":      "admin@kthais.com",
 		}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, saveRec.Code)
@@ -911,10 +961,14 @@ func TestEmailSettings(t *testing.T) {
 			confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 			require.Equal(t, http.StatusOK, confirmRec.Code)
 
-			accountEmail := fake.sentEmails[len(fake.sentEmails)-2]
-			mattermostEmail := fake.sentEmails[len(fake.sentEmails)-1]
+			accountEmail := fake.sentEmails[len(fake.sentEmails)-3]
+			mattermostEmail := fake.sentEmails[len(fake.sentEmails)-2]
+			contractEmail := fake.sentEmails[len(fake.sentEmails)-1]
 			require.Contains(t, accountEmail["body"], "Welcome aboard, Margaret!")
 			require.Contains(t, mattermostEmail["body"], "Say hi in #general, Margaret.")
+			require.Equal(t, emailcontent.ContractSubject, contractEmail["subject"])
+			// Straight from settings, no per-record token minted for it.
+			require.Equal(t, "https://drive.google.com/file/d/contract-2026/view", contractEmail["button_url"])
 		})
 	})
 }

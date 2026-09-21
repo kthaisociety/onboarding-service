@@ -10,8 +10,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"onboarding-service/internal/backendclient"
+	"onboarding-service/internal/config"
 	"onboarding-service/internal/emailcontent"
 	"onboarding-service/internal/googleworkspace"
 	"onboarding-service/internal/mattermost"
@@ -46,13 +48,14 @@ var teamGroups = map[string]string{
 // bookkeeping) — see onboarding-service-plan.md's "Why split it".
 type Service struct {
 	db         *gorm.DB
+	cfg        *config.Config
 	google     googleworkspace.Provisioner
 	mattermost *mattermost.Client
 	backend    *backendclient.Client
 }
 
-func NewService(db *gorm.DB, google googleworkspace.Provisioner, mm *mattermost.Client, backend *backendclient.Client) *Service {
-	return &Service{db: db, google: google, mattermost: mm, backend: backend}
+func NewService(db *gorm.DB, cfg *config.Config, google googleworkspace.Provisioner, mm *mattermost.Client, backend *backendclient.Client) *Service {
+	return &Service{db: db, cfg: cfg, google: google, mattermost: mm, backend: backend}
 }
 
 // Provision runs steps 6-8 against record. It is idempotent end-to-end —
@@ -204,6 +207,30 @@ func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword 
 	mattermostSubject, mattermostBody := emailcontent.BuildMattermost(settings.MattermostIntroText, record.FirstName)
 	if err := s.backend.SendEmail(record.KthEmail, mattermostSubject, mattermostBody, s.mattermost.BaseURL(), emailcontent.MattermostButtonText); err != nil {
 		return fmt.Errorf("mattermost getting-started email: %w", err)
+	}
+
+	// ContractURL is a fixed link an admin pastes in (a Google Drive doc
+	// shared within the kthais.com org) — see
+	// models.OnboardingEmailSettings.ContractURL's own doc comment for why
+	// this doesn't mint a per-record token the way the other emails' links
+	// do: Google's own domain-restricted sharing is the auth here, so
+	// there's nothing for this service to issue or serve itself.
+	//
+	// Skipped entirely (not an error) while ContractURL is unset: the base
+	// email template falls back to a mailto "Contact us" link for an empty
+	// button URL, but ContractButtonText ("View your contract") is always
+	// non-empty, so an unset URL would otherwise render a button that
+	// claims to open the contract and silently opens a contact-us email
+	// instead. An admin hasn't finished configuring this email yet, not a
+	// failure — same "expected until configured" idiom as
+	// notifyOnboardingService skipping when OnboardingServiceURL is unset.
+	if strings.TrimSpace(settings.ContractURL) == "" {
+		log.Printf("sendFinalEmails: skipping contract email for record %d — no contract_url configured yet", record.ID)
+	} else {
+		contractSubject, contractBody := emailcontent.BuildContract(settings.ContractIntroText, record.FirstName, settings.BylawsURL, settings.LumaKickoffURL)
+		if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, settings.ContractURL, emailcontent.ContractButtonText); err != nil {
+			return fmt.Errorf("contract email: %w", err)
+		}
 	}
 
 	return nil

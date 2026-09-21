@@ -75,7 +75,7 @@ func main() {
 		log.Printf("startup check: Mattermost at %s reachable", cfg.MattermostURL)
 	}
 
-	provisioningService := provisioning.NewService(db, googleClient, mattermostClient, backend)
+	provisioningService := provisioning.NewService(db, cfg, googleClient, mattermostClient, backend)
 	offboardingService := offboarding.NewService(googleClient, mattermostClient, backend)
 
 	// One-shot reachability check against the backend, logged at boot only —

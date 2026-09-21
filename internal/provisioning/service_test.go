@@ -11,6 +11,7 @@ import (
 
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
+	"onboarding-service/internal/emailcontent"
 	"onboarding-service/internal/googleworkspace"
 	"onboarding-service/internal/mattermost"
 	"onboarding-service/internal/models"
@@ -121,6 +122,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	cfg := &config.Config{
 		OnboardingServiceSecret: "test-secret",
 		BackendURL:              backendServer.URL,
+		PortalBaseURL:           "https://kthais.com/onboarding",
 		MattermostURL:           "https://chat.aisociety.se",
 		MattermostBotToken:      "test-bot-token",
 	}
@@ -138,7 +140,7 @@ func newTestHarness(t *testing.T) *testHarness {
 
 	backend := backendclient.New(cfg)
 	mm := mattermost.New(cfg)
-	h.service = NewService(db, h.google, mm, backend)
+	h.service = NewService(db, cfg, h.google, mm, backend)
 	return h
 }
 
@@ -192,18 +194,43 @@ func TestProvisionManualOnboardingSkipsRecordAccount(t *testing.T) {
 func TestProvisionHappyPath(t *testing.T) {
 	h := newTestHarness(t)
 	record := newTestRecord(h.service.db, t)
+	// ContractURL configured — the "properly set up" case, exercising all
+	// three final emails. See TestProvisionSkipsContractEmailWhenURLUnset
+	// for the unconfigured case.
+	_, err := emailcontent.Save(h.service.db, "", "", "", "", "", "https://drive.google.com/file/d/contract/view", "", "", "admin@kthais.com")
+	require.NoError(t, err)
 
-	err := h.service.Provision(context.Background(), record)
+	err = h.service.Provision(context.Background(), record)
 	require.NoError(t, err)
 
 	require.Equal(t, models.StateComplete, record.State)
 	require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
 	require.Equal(t, 1, h.google.createCalls)
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.google.groupMembers["development@kthais.com"])
-	require.Len(t, h.sentEmails, 2)
+	require.Len(t, h.sentEmails, 3, "account-info, mattermost getting-started, contract")
 	require.Len(t, h.recordedAccounts, 1)
 	require.Equal(t, "grace.hopper@kthais.com", h.recordedAccounts[0]["kthais_email"])
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.lumaAddedMembers)
+}
+
+// TestProvisionSkipsContractEmailWhenURLUnset covers the common early-days
+// state: an admin hasn't gotten around to setting ContractURL yet.
+// Provisioning must still complete — this is a "not configured yet" state,
+// not a failure — just without a contract email whose button would
+// otherwise claim to open a contract and silently fall back to a mailto
+// "Contact us" link instead (see sendFinalEmails' own doc comment).
+func TestProvisionSkipsContractEmailWhenURLUnset(t *testing.T) {
+	h := newTestHarness(t)
+	record := newTestRecord(h.service.db, t)
+
+	err := h.service.Provision(context.Background(), record)
+	require.NoError(t, err)
+
+	require.Equal(t, models.StateComplete, record.State)
+	require.Len(t, h.sentEmails, 2, "account-info, mattermost getting-started — no contract email")
+	for _, email := range h.sentEmails {
+		require.NotEqual(t, "Your KTH AI Society membership contract", email["subject"])
+	}
 }
 
 // TestProvisionLumaFailureFailsAndIsRetryable covers the blocking failure
