@@ -229,13 +229,14 @@ func TestNotify(t *testing.T) {
 func TestPortalFlow(t *testing.T) {
 	engine, cfg, fake := newTestServer(t)
 
-	// ContractURL configured up front — this test exercises the full
+	// LumaKickoffURL configured up front — this test exercises the full
 	// five-email flow; the contract email would otherwise be skipped as
 	// "not configured yet" (see provisioning.Service.sendFinalEmails' own
-	// doc comment, and provisioning.TestProvisionSkipsContractEmailWhenURLUnset
+	// doc comment, and provisioning.TestProvisionSkipsContractEmailWhenLumaKickoffURLUnset
 	// for that case).
 	settingsRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
 		"contract_url":     "https://drive.google.com/file/d/contract/view",
+		"luma_kickoff_url": "https://lu.ma/kickoff",
 		"updated_by_email": "admin@kthais.com",
 	}, cfg.OnboardingServiceSecret)
 	require.Equal(t, http.StatusOK, settingsRec.Code)
@@ -898,14 +899,30 @@ func TestEmailSettings(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		require.Equal(t, emailcontent.ContractSubject, body["subject"])
 		require.Contains(t, body["body"], "Please read ahead of the kick-off, "+emailcontent.PreviewFirstName+"!")
+		require.Contains(t, body["body"], "https://drive.google.com/file/d/draft-contract/view")
 		require.Contains(t, body["body"], "https://kthais.com/draft-bylaws.pdf")
-		require.Contains(t, body["body"], "https://lu.ma/draft-kickoff")
+		require.NotContains(t, body["body"], "stale-contract")
 		require.NotContains(t, body["body"], "stale-bylaws")
-		require.NotContains(t, body["body"], "stale-kickoff")
-		// The contract button is just whatever link the request sent, same
-		// as mattermost's fixed button — no per-record token minted.
-		require.Equal(t, "https://drive.google.com/file/d/draft-contract/view", body["button_url"])
-		require.Equal(t, emailcontent.ContractButtonText, body["button_text"])
+		// The button is the kick-off RSVP link, not the contract — just
+		// whatever link the request sent, same as mattermost's fixed
+		// button — no per-record token minted.
+		require.Equal(t, "https://lu.ma/draft-kickoff", body["button_url"])
+		require.NotEqual(t, "https://lu.ma/stale-kickoff", body["button_url"])
+		require.Equal(t, emailcontent.KickoffRSVPButtonText, body["button_text"])
+	})
+
+	t.Run("contract preview never renders a dangling label for a whitespace-only link", func(t *testing.T) {
+		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
+			"kind":         "contract",
+			"intro_text":   "whatever",
+			"contract_url": "   ",
+			"bylaws_url":   "   ",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.NotContains(t, body["body"], "Contract:")
+		require.NotContains(t, body["body"], "Bylaws:")
 	})
 
 	t.Run("unknown kind is rejected", func(t *testing.T) {
@@ -922,6 +939,7 @@ func TestEmailSettings(t *testing.T) {
 			"account_intro_text":    "Welcome aboard, {{first_name}}!",
 			"mattermost_intro_text": "Say hi in #general, {{first_name}}.",
 			"contract_url":          "https://drive.google.com/file/d/contract-2026/view",
+			"luma_kickoff_url":      "https://lu.ma/kickoff-2026",
 			"updated_by_email":      "admin@kthais.com",
 		}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, saveRec.Code)
@@ -967,8 +985,11 @@ func TestEmailSettings(t *testing.T) {
 			require.Contains(t, accountEmail["body"], "Welcome aboard, Margaret!")
 			require.Contains(t, mattermostEmail["body"], "Say hi in #general, Margaret.")
 			require.Equal(t, emailcontent.ContractSubject, contractEmail["subject"])
-			// Straight from settings, no per-record token minted for it.
-			require.Equal(t, "https://drive.google.com/file/d/contract-2026/view", contractEmail["button_url"])
+			// The button is the kick-off RSVP link, straight from settings,
+			// no per-record token minted for it. The contract link itself
+			// travels as a plain (linkified) URL in the body instead.
+			require.Equal(t, "https://lu.ma/kickoff-2026", contractEmail["button_url"])
+			require.Contains(t, contractEmail["body"], "https://drive.google.com/file/d/contract-2026/view")
 		})
 	})
 }

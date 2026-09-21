@@ -194,10 +194,13 @@ func TestProvisionManualOnboardingSkipsRecordAccount(t *testing.T) {
 func TestProvisionHappyPath(t *testing.T) {
 	h := newTestHarness(t)
 	record := newTestRecord(h.service.db, t)
-	// ContractURL configured — the "properly set up" case, exercising all
-	// three final emails. See TestProvisionSkipsContractEmailWhenURLUnset
+	// LumaKickoffURL (the CTA) configured, along with the contract and
+	// bylaws links — the "properly set up" case, exercising all three
+	// final emails. See TestProvisionSkipsContractEmailWhenLumaKickoffURLUnset
 	// for the unconfigured case.
-	_, err := emailcontent.Save(h.service.db, "", "", "", "", "", "https://drive.google.com/file/d/contract/view", "", "", "admin@kthais.com")
+	_, err := emailcontent.Save(h.service.db, "", "", "", "", "",
+		"https://drive.google.com/file/d/contract/view", "https://kthais.com/bylaws.pdf", "https://lu.ma/kickoff",
+		"admin@kthais.com")
 	require.NoError(t, err)
 
 	err = h.service.Provision(context.Background(), record)
@@ -213,13 +216,14 @@ func TestProvisionHappyPath(t *testing.T) {
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.lumaAddedMembers)
 }
 
-// TestProvisionSkipsContractEmailWhenURLUnset covers the common early-days
-// state: an admin hasn't gotten around to setting ContractURL yet.
-// Provisioning must still complete — this is a "not configured yet" state,
-// not a failure — just without a contract email whose button would
-// otherwise claim to open a contract and silently fall back to a mailto
-// "Contact us" link instead (see sendFinalEmails' own doc comment).
-func TestProvisionSkipsContractEmailWhenURLUnset(t *testing.T) {
+// TestProvisionSkipsContractEmailWhenLumaKickoffURLUnset covers the common
+// early-days state: an admin hasn't gotten around to setting
+// LumaKickoffURL yet. Provisioning must still complete — this is a "not
+// configured yet" state, not a failure — just without a contract email
+// whose button would otherwise claim to RSVP for the kick-off event and
+// silently fall back to a mailto "Contact us" link instead (see
+// sendFinalEmails' own doc comment).
+func TestProvisionSkipsContractEmailWhenLumaKickoffURLUnset(t *testing.T) {
 	h := newTestHarness(t)
 	record := newTestRecord(h.service.db, t)
 

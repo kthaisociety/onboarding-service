@@ -141,8 +141,9 @@ type previewEmailSettingsRequest struct {
 // Also returns the button this email would actually carry — account,
 // mattermost, and contract all have a fixed button once configured (see
 // emailcontent.AccountButtonURL/Text, MattermostButtonText, and
-// ContractURL/ContractButtonText), so the preview can show the real thing
-// instead of leaving it for the caller to guess or fall back to a default.
+// LumaKickoffURL/KickoffRSVPButtonText), so the preview can show the real
+// thing instead of leaving it for the caller to guess or fall back to a
+// default.
 // start and confirm return only a button text, no URL: their real ones are
 // per-record portal token URLs that don't exist yet for a preview —
 // landingpage-backend's proxy substitutes its own placeholder for those two.
@@ -168,8 +169,8 @@ func (h *EmailSettingsHandler) Preview(c *gin.Context) {
 		subject, body = emailcontent.BuildMattermost(req.IntroText, emailcontent.PreviewFirstName)
 		buttonURL, buttonText = h.cfg.MattermostURL, emailcontent.MattermostButtonText
 	case "contract":
-		subject, body = emailcontent.BuildContract(req.IntroText, emailcontent.PreviewFirstName, req.BylawsURL, req.LumaKickoffURL)
-		buttonURL, buttonText = req.ContractURL, emailcontent.ContractButtonText
+		subject, body = emailcontent.BuildContract(req.IntroText, emailcontent.PreviewFirstName, req.ContractURL, req.BylawsURL)
+		buttonURL, buttonText = req.LumaKickoffURL, emailcontent.KickoffRSVPButtonText
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost, contract"})
 		return

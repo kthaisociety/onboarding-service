@@ -27,13 +27,17 @@ type OnboardingEmailSettings struct {
 	// admin-editable rather than hardcoded like emailcontent.AccountButtonURL,
 	// since all three change on a schedule outside any developer's control
 	// (a new contract each membership cycle, bylaws revisions, a new
-	// kick-off event) and shouldn't need a deploy to update. ContractURL is
-	// deliberately just a link an admin pastes in, not an uploaded file this
-	// service stores or serves itself — it points at a Google Drive doc
-	// shared within the kthais.com Workspace org, so Google's own
-	// domain-restricted sharing is the auth: only someone signed into the
-	// @kthais.com account they were just provisioned can open it, no custom
-	// token or file storage needed on this end.
+	// kick-off event) and shouldn't need a deploy to update. LumaKickoffURL
+	// is the email's CTA (RSVPing for the kick-off event — where the
+	// contract is actually signed, in person — is the one thing every
+	// recipient must do); ContractURL/BylawsURL are supplementary reading,
+	// linked as plain text in the body instead. ContractURL is deliberately
+	// just a link an admin pastes in, not an uploaded file this service
+	// stores or serves itself — it points at a Google Drive doc shared
+	// within the kthais.com Workspace org, so Google's own domain-restricted
+	// sharing is the auth: only someone signed into the @kthais.com account
+	// they were just provisioned can open it, no custom token or file
+	// storage needed on this end.
 	ContractURL    string `gorm:"type:text;not null;default:''"`
 	BylawsURL      string `gorm:"type:text;not null;default:''"`
 	LumaKickoffURL string `gorm:"type:text;not null;default:''"`

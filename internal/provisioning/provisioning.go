@@ -209,26 +209,25 @@ func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword 
 		return fmt.Errorf("mattermost getting-started email: %w", err)
 	}
 
-	// ContractURL is a fixed link an admin pastes in (a Google Drive doc
-	// shared within the kthais.com org) — see
-	// models.OnboardingEmailSettings.ContractURL's own doc comment for why
-	// this doesn't mint a per-record token the way the other emails' links
-	// do: Google's own domain-restricted sharing is the auth here, so
-	// there's nothing for this service to issue or serve itself.
+	// LumaKickoffURL is a fixed link an admin pastes in — see
+	// models.OnboardingEmailSettings.LumaKickoffURL's own doc comment for
+	// why this doesn't mint a per-record token the way the other emails'
+	// links do: RSVPing is a public Luma action, nothing for this service
+	// to issue or serve itself.
 	//
-	// Skipped entirely (not an error) while ContractURL is unset: the base
-	// email template falls back to a mailto "Contact us" link for an empty
-	// button URL, but ContractButtonText ("View your contract") is always
-	// non-empty, so an unset URL would otherwise render a button that
-	// claims to open the contract and silently opens a contact-us email
-	// instead. An admin hasn't finished configuring this email yet, not a
-	// failure — same "expected until configured" idiom as
-	// notifyOnboardingService skipping when OnboardingServiceURL is unset.
-	if strings.TrimSpace(settings.ContractURL) == "" {
-		log.Printf("sendFinalEmails: skipping contract email for record %d — no contract_url configured yet", record.ID)
+	// Skipped entirely (not an error) while LumaKickoffURL is unset: the
+	// base email template falls back to a mailto "Contact us" link for an
+	// empty button URL, but KickoffRSVPButtonText is always non-empty, so
+	// an unset URL would otherwise render a button that claims to RSVP for
+	// the kick-off event and silently opens a contact-us email instead. An
+	// admin hasn't finished configuring this email yet, not a failure —
+	// same "expected until configured" idiom as notifyOnboardingService
+	// skipping when OnboardingServiceURL is unset.
+	if strings.TrimSpace(settings.LumaKickoffURL) == "" {
+		log.Printf("sendFinalEmails: skipping contract email for record %d — no luma_kickoff_url configured yet", record.ID)
 	} else {
-		contractSubject, contractBody := emailcontent.BuildContract(settings.ContractIntroText, record.FirstName, settings.BylawsURL, settings.LumaKickoffURL)
-		if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, settings.ContractURL, emailcontent.ContractButtonText); err != nil {
+		contractSubject, contractBody := emailcontent.BuildContract(settings.ContractIntroText, record.FirstName, settings.ContractURL, settings.BylawsURL)
+		if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, settings.LumaKickoffURL, emailcontent.KickoffRSVPButtonText); err != nil {
 			return fmt.Errorf("contract email: %w", err)
 		}
 	}
