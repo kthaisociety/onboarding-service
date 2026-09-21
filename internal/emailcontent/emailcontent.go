@@ -87,23 +87,21 @@ const DefaultMattermostIntro = "You've been added to the KTH AI Society Mattermo
 
 const ContractSubject = "Your KTH AI Society membership contract"
 
-// DefaultContractIntro: signing itself happens in person at the kick-off
-// event, not through this email — this is sent ahead of time purely so
-// members have a chance to read the contract in advance, not a request to
-// act on it immediately.
-const DefaultContractIntro = "Ahead of our kick-off event, take a moment to read through your KTH AI Society membership contract below — you'll sign it in person there. You can also find our bylaws and the kick-off event details below."
+// DefaultContractIntro states the obligation plainly: attending the
+// kick-off event isn't optional, it's where the contract actually gets
+// signed, in person — this email is sent ahead of time purely so members
+// can read the contract and bylaws in advance, not as the signing
+// mechanism itself.
+const DefaultContractIntro = "Attending our kick-off event is mandatory — that's where you'll sign your KTH AI Society membership contract in person. Please RSVP below, and take a look at the contract and our bylaws beforehand so you know what you're signing."
 
-// ContractButtonText labels the contract email's button, which points at
-// OnboardingEmailSettings.ContractURL — a fixed link an admin pastes in
-// (see that field's own doc comment for why: a Google Drive doc shared
-// within the kthais.com org, Google's own domain-restricted sharing acting
-// as the auth, not a file this service stores or serves itself). Says
-// "View", not "sign": signing happens in person at the kick-off event, this
-// link is only for reading it in advance. The bylaws and kick-off links
-// travel as plain text in the body instead, same treatment as
-// PasskeySetupURL in BuildAccount: only one button slot exists per email,
-// reserved for the action every recipient should take.
-const ContractButtonText = "View your contract"
+// KickoffRSVPButtonText labels the contract email's button, which points at
+// OnboardingEmailSettings.LumaKickoffURL. RSVPing for the kick-off event —
+// where members sign the contract in person — is the one action every
+// recipient must take, so that's the CTA; the contract and bylaws are
+// supplementary reading, linked as plain text in the body instead (see
+// BuildContract), same "one button slot, reserved for the required action"
+// reasoning as PasskeySetupURL in BuildAccount.
+const KickoffRSVPButtonText = "RSVP for the kick-off event"
 
 // substitute replaces the placeholders admin-edited intro text may contain —
 // plain string substitution, never executed as a template, since this text
@@ -201,28 +199,31 @@ func BuildMattermost(introText, firstName string) (subject, body string) {
 }
 
 // BuildContract composes the membership-contract email: an admin-editable
-// intro, plus the bylaws and kick-off-event links every recipient needs —
-// always appended in code, same reasoning as the credentials list in
-// BuildAccount, since an admin's intro text should never be able to push
-// those out. bylawsURL/lumaURL come from admin-editable settings, not a
-// fixed constant (see OnboardingEmailSettings.BylawsURL/LumaKickoffURL) —
-// unlike AccountButtonURL, these change on a schedule outside any
-// developer's control (bylaws revisions, a new kick-off event each cycle),
-// so a redeploy shouldn't be required to update them. Either may be empty
-// (not yet configured); the corresponding line is simply omitted rather
-// than emailing a dangling "Kick-off event: " with nothing after it.
-func BuildContract(introText, firstName, bylawsURL, lumaURL string) (subject, body string) {
+// intro, plus the contract and bylaws links every recipient needs to read
+// in advance — always appended in code, same reasoning as the credentials
+// list in BuildAccount, since an admin's intro text should never be able to
+// push those out. Both come from admin-editable settings, not fixed
+// constants (see OnboardingEmailSettings.ContractURL/BylawsURL) — these
+// change on a schedule outside any developer's control (a new contract
+// each membership cycle, bylaws revisions), so a redeploy shouldn't be
+// required to update them. Either may be empty (not yet configured); the
+// corresponding line is simply omitted rather than emailing a dangling
+// "Bylaws: " with nothing after it. Unlike the kick-off RSVP link (see
+// KickoffRSVPButtonText), these are deliberately plain links in the body,
+// not the button — landingpage-backend's RenderOnboardingEmail linkifies
+// any bare URL in the body, so they still render as real clickable links.
+func BuildContract(introText, firstName, contractURL, bylawsURL string) (subject, body string) {
 	if strings.TrimSpace(introText) == "" {
 		introText = DefaultContractIntro
 	}
 	intro := substitute(introText, firstName, "")
 
 	body = "Hi " + firstName + ",\n\n" + intro
-	if bylawsURL != "" {
-		body += "\n\nClub bylaws: " + bylawsURL
+	if contractURL != "" {
+		body += "\n\nContract: " + contractURL
 	}
-	if lumaURL != "" {
-		body += "\n\nKick-off event (RSVP on Luma): " + lumaURL
+	if bylawsURL != "" {
+		body += "\n\nBylaws: " + bylawsURL
 	}
 	return ContractSubject, body
 }
