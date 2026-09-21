@@ -156,6 +156,14 @@ func (c *client) AddToGroup(ctx context.Context, groupEmail, memberEmail string)
 // DeleteUser below: an account already gone from Google (deleted directly
 // from the Admin Console, or by a prior offboarding.Service.Delete call)
 // must not keep failing the Google leg forever either.
+//
+// The initial Get and the Update below aren't atomic, so a concurrent
+// Deactivate call (or an admin suspending the same account by hand) can
+// suspend the account in between — Update then fails with the same
+// "already suspended" 403 the pre-check exists to avoid. Rather than
+// pattern-matching that specific error, a failed Update re-checks the
+// account's state directly and treats "it's suspended now" as success
+// regardless of why Update failed, same principle applied twice.
 func (c *client) SuspendUser(ctx context.Context, primaryEmail string) error {
 	existing, err := c.svc.Users.Get(primaryEmail).Context(ctx).Do()
 	if err != nil {
@@ -171,6 +179,9 @@ func (c *client) SuspendUser(ctx context.Context, primaryEmail string) error {
 	update := &admin.User{Suspended: true}
 	if _, err := c.svc.Users.Update(primaryEmail, update).Context(ctx).Do(); err != nil {
 		if isNotFound(err) {
+			return nil
+		}
+		if current, getErr := c.svc.Users.Get(primaryEmail).Context(ctx).Do(); getErr == nil && current.Suspended {
 			return nil
 		}
 		return fmt.Errorf("suspending user %s: %w", primaryEmail, err)

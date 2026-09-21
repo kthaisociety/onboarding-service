@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,11 +45,16 @@ func (f *fakeDeprovisioner) DeleteUser(ctx context.Context, primaryEmail string)
 // fakeMattermostServer stands up a real mattermost.Client against an
 // httptest.Server, matching the pattern used in internal/mattermost's own
 // tests — this package uses *mattermost.Client concretely (same as
-// internal/provisioning does), so a real HTTP fake is simplest.
+// internal/provisioning does), so a real HTTP fake is simplest. Tracks
+// deactivated state (like a real Mattermost server's delete_at) rather
+// than just counting calls, so a test can drive the real
+// mattermost.Client.DeactivateUser through its own "already deactivated"
+// no-op path — see TestDeactivateRetryAfterPartialFailureSucceeds.
 type fakeMattermostServer struct {
 	failLookup  bool
 	failDelete  bool
 	deleteCalls int
+	deactivated bool
 }
 
 func (f *fakeMattermostServer) client(t *testing.T) *mattermost.Client {
@@ -62,7 +68,11 @@ func (f *fakeMattermostServer) client(t *testing.T) *mattermost.Client {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"mm-user-1"}`))
+			deleteAt := 0
+			if f.deactivated {
+				deleteAt = 1700000000000
+			}
+			_, _ = fmt.Fprintf(w, `{"id":"mm-user-1","delete_at":%d}`, deleteAt)
 		case r.Method == http.MethodDelete:
 			f.deleteCalls++
 			if f.failDelete {
@@ -71,6 +81,7 @@ func (f *fakeMattermostServer) client(t *testing.T) *mattermost.Client {
 				_, _ = w.Write([]byte(`{"id":"api.context.permissions.app_error","message":"You do not have the appropriate permissions."}`))
 				return
 			}
+			f.deactivated = true
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
@@ -173,7 +184,18 @@ func TestDeactivateGoogleFailureStillChecksMattermostAndLuma(t *testing.T) {
 // TestDeactivateRetryAfterPartialFailureSucceeds proves Deactivate is safe
 // to call again after a partial failure: retrying with the previously
 // failing step now fixed must reach a clean success, not re-report the
-// steps that already succeeded on the first attempt as new failures.
+// steps that already succeeded on the first attempt as new failures. Then
+// retries a third time against the now-fully-deactivated account, and
+// checks deleteCalls stops climbing — proving the retry reaches success
+// because mattermost.Client.DeactivateUser's own already-deactivated
+// no-op kicked in (see fakeMattermostServer's delete_at tracking), not
+// just because the fakes happen to always succeed when told to. The
+// Google leg can't be driven through this same real-idempotency path:
+// fakeDeprovisioner is a hand-written Deprovisioner stub, not the real
+// googleworkspace.Client, which is where SuspendUser's own already-
+// suspended check actually lives (see its doc comment) — there's no
+// httptest-server-backed fake for the Admin SDK client anywhere in this
+// codebase to exercise that through.
 func TestDeactivateRetryAfterPartialFailureSucceeds(t *testing.T) {
 	google := &fakeDeprovisioner{}
 	mm := &fakeMattermostServer{failDelete: true}
@@ -183,10 +205,16 @@ func TestDeactivateRetryAfterPartialFailureSucceeds(t *testing.T) {
 	err := svc.Deactivate(context.Background(), "grace@kthais.com")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "mattermost:")
+	require.Equal(t, 1, mm.deleteCalls, "the failed DELETE attempt still counts as a call")
 
 	mm.failDelete = false
 	err = svc.Deactivate(context.Background(), "grace@kthais.com")
 	require.NoError(t, err, "retrying after the failing step is fixed must succeed cleanly")
+	require.Equal(t, 2, mm.deleteCalls, "this retry's DELETE actually went through and deactivated the account")
+
+	err = svc.Deactivate(context.Background(), "grace@kthais.com")
+	require.NoError(t, err, "retrying an already-fully-deactivated account must still succeed")
+	require.Equal(t, 2, mm.deleteCalls, "mattermost's own already-deactivated check must have no-op'd this DELETE")
 }
 
 // TestDeactivateLumaFailureJoinsWithoutSuppressingOthers covers the same
