@@ -140,9 +140,50 @@ func (c *client) AddToGroup(ctx context.Context, groupEmail, memberEmail string)
 // primaryEmail — reversible from the Admin Console at any time. Uses the
 // same admin.directory.user scope already granted for provisioning, so
 // this needs no new Google Cloud Console authorization.
+//
+// Checks the current state first rather than just calling Update and
+// inspecting the error: Google's Admin SDK returns a 403 (not a clean,
+// checkable "already suspended" error) for re-suspending an account that's
+// already suspended, observed in production against a real member's
+// account. Reading the state first turns that into a clean no-op instead
+// of a surfaced failure, matching the "nothing to do here is still
+// success" convention offboarding.Service applies uniformly across all
+// three systems (Mattermost lookup 404, Luma no-membership) — without it,
+// Deactivate would report an already-suspended member as a Google failure
+// forever and never mark them deactivated locally, even though Google's
+// side is already exactly the state Deactivate is trying to reach. Also
+// treats "no such user" as success, same idempotency reasoning as
+// DeleteUser below: an account already gone from Google (deleted directly
+// from the Admin Console, or by a prior offboarding.Service.Delete call)
+// must not keep failing the Google leg forever either.
+//
+// The initial Get and the Update below aren't atomic, so a concurrent
+// Deactivate call (or an admin suspending the same account by hand) can
+// suspend the account in between — Update then fails with the same
+// "already suspended" 403 the pre-check exists to avoid. Rather than
+// pattern-matching that specific error, a failed Update re-checks the
+// account's state directly and treats "it's suspended now" as success
+// regardless of why Update failed, same principle applied twice.
 func (c *client) SuspendUser(ctx context.Context, primaryEmail string) error {
+	existing, err := c.svc.Users.Get(primaryEmail).Context(ctx).Do()
+	if err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("checking suspension state for %s: %w", primaryEmail, err)
+	}
+	if existing.Suspended {
+		return nil
+	}
+
 	update := &admin.User{Suspended: true}
 	if _, err := c.svc.Users.Update(primaryEmail, update).Context(ctx).Do(); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		if current, getErr := c.svc.Users.Get(primaryEmail).Context(ctx).Do(); getErr == nil && current.Suspended {
+			return nil
+		}
 		return fmt.Errorf("suspending user %s: %w", primaryEmail, err)
 	}
 	return nil
