@@ -11,6 +11,14 @@ type TokenPurpose string
 const (
 	PurposeStartPortal     TokenPurpose = "start_portal"
 	PurposeConfirmKthEmail TokenPurpose = "confirm_kth_email"
+	// PurposeContractDownload gates the membership-contract download link
+	// sent in the contract email (see internal/emailcontent.BuildContract).
+	// Unlike the other two purposes, a lookup against this one is never
+	// marked used — the link should keep working every time the member
+	// clicks it (e.g. to re-download after signing), same reasoning as
+	// PortalHandler.ConfirmInfo never consuming the confirm token it looks
+	// up.
+	PurposeContractDownload TokenPurpose = "contract_download"
 )
 
 // OnboardingToken is a single-use, hashed access token gating one step of

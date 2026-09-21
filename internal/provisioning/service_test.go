@@ -121,6 +121,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	cfg := &config.Config{
 		OnboardingServiceSecret: "test-secret",
 		BackendURL:              backendServer.URL,
+		PortalBaseURL:           "https://kthais.com/onboarding",
 		MattermostURL:           "https://chat.aisociety.se",
 		MattermostBotToken:      "test-bot-token",
 	}
@@ -138,7 +139,7 @@ func newTestHarness(t *testing.T) *testHarness {
 
 	backend := backendclient.New(cfg)
 	mm := mattermost.New(cfg)
-	h.service = NewService(db, h.google, mm, backend)
+	h.service = NewService(db, cfg, h.google, mm, backend)
 	return h
 }
 
@@ -200,7 +201,7 @@ func TestProvisionHappyPath(t *testing.T) {
 	require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
 	require.Equal(t, 1, h.google.createCalls)
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.google.groupMembers["development@kthais.com"])
-	require.Len(t, h.sentEmails, 2)
+	require.Len(t, h.sentEmails, 3, "account-info, mattermost getting-started, contract")
 	require.Len(t, h.recordedAccounts, 1)
 	require.Equal(t, "grace.hopper@kthais.com", h.recordedAccounts[0]["kthais_email"])
 	require.Equal(t, []string{"grace.hopper@kthais.com"}, h.lumaAddedMembers)

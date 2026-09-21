@@ -10,8 +10,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"onboarding-service/internal/backendclient"
+	"onboarding-service/internal/config"
 	"onboarding-service/internal/emailcontent"
 	"onboarding-service/internal/googleworkspace"
 	"onboarding-service/internal/mattermost"
@@ -46,13 +48,14 @@ var teamGroups = map[string]string{
 // bookkeeping) — see onboarding-service-plan.md's "Why split it".
 type Service struct {
 	db         *gorm.DB
+	cfg        *config.Config
 	google     googleworkspace.Provisioner
 	mattermost *mattermost.Client
 	backend    *backendclient.Client
 }
 
-func NewService(db *gorm.DB, google googleworkspace.Provisioner, mm *mattermost.Client, backend *backendclient.Client) *Service {
-	return &Service{db: db, google: google, mattermost: mm, backend: backend}
+func NewService(db *gorm.DB, cfg *config.Config, google googleworkspace.Provisioner, mm *mattermost.Client, backend *backendclient.Client) *Service {
+	return &Service{db: db, cfg: cfg, google: google, mattermost: mm, backend: backend}
 }
 
 // Provision runs steps 6-8 against record. It is idempotent end-to-end —
@@ -206,7 +209,39 @@ func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword 
 		return fmt.Errorf("mattermost getting-started email: %w", err)
 	}
 
+	contractLink, err := s.issueContractDownloadLink(record)
+	if err != nil {
+		return fmt.Errorf("contract download link: %w", err)
+	}
+	contractSubject, contractBody := emailcontent.BuildContract(settings.ContractIntroText, record.FirstName, settings.BylawsURL, settings.LumaKickoffURL)
+	if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, contractLink, emailcontent.ContractButtonText); err != nil {
+		return fmt.Errorf("contract email: %w", err)
+	}
+
 	return nil
+}
+
+// issueContractDownloadLink mints a fresh contract_download token for
+// record and returns the emailable link — a new token each time
+// sendFinalEmails runs (including on a retry), same as ensureAccount
+// minting a new temp password on retry rather than trying to recover a
+// prior one; the old token, if any, is simply left to expire unused rather
+// than revoked, since it's harmless for more than one valid link to exist.
+func (s *Service) issueContractDownloadLink(record *models.OnboardingRecord) (string, error) {
+	raw, hash, err := utils.GenerateToken()
+	if err != nil {
+		return "", err
+	}
+	token := models.OnboardingToken{
+		OnboardingRecordID: record.ID,
+		Purpose:            models.PurposeContractDownload,
+		TokenHash:          hash,
+		ExpiresAt:          time.Now().Add(config.ContractDownloadTokenValidity),
+	}
+	if err := s.db.Create(&token).Error; err != nil {
+		return "", err
+	}
+	return s.cfg.PortalBaseURL + "/contract?token=" + raw, nil
 }
 
 func (s *Service) save(record *models.OnboardingRecord, state models.OnboardingState) error {

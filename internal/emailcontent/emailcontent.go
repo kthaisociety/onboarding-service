@@ -85,6 +85,24 @@ const MattermostButtonText = "Open Mattermost"
 // sign-in identity is the new @kthais.com address.
 const DefaultMattermostIntro = "You've been added to the KTH AI Society Mattermost workspace. Click the button below and sign in with your new @kthais.com account to get started."
 
+const ContractSubject = "Your KTH AI Society membership contract"
+
+// DefaultContractIntro: signing itself happens in person at the kick-off
+// event, not through this email — this is sent ahead of time purely so
+// members have a chance to read the contract in advance, not a request to
+// act on it immediately.
+const DefaultContractIntro = "Ahead of our kick-off event, take a moment to read through your KTH AI Society membership contract below — you'll sign it in person there. You can also find our bylaws and the kick-off event details below."
+
+// ContractButtonText labels the contract email's button, which points at
+// the emailed download link (a per-record token URL, built by whatever
+// calls BuildContract — see provisioning.Service.sendFinalEmails). Says
+// "View", not "sign": signing happens in person at the kick-off event, this
+// link is only for reading it in advance. The bylaws and kick-off links
+// travel as plain text in the body instead, same treatment as
+// PasskeySetupURL in BuildAccount: only one button slot exists per email,
+// reserved for the action every recipient should take.
+const ContractButtonText = "View your contract"
+
 // substitute replaces the placeholders admin-edited intro text may contain —
 // plain string substitution, never executed as a template, since this text
 // is saved by an admin, not a developer. team is only meaningful for the
@@ -180,6 +198,33 @@ func BuildMattermost(introText, firstName string) (subject, body string) {
 	return MattermostSubject, body
 }
 
+// BuildContract composes the membership-contract email: an admin-editable
+// intro, plus the bylaws and kick-off-event links every recipient needs —
+// always appended in code, same reasoning as the credentials list in
+// BuildAccount, since an admin's intro text should never be able to push
+// those out. bylawsURL/lumaURL come from admin-editable settings, not a
+// fixed constant (see OnboardingEmailSettings.BylawsURL/LumaKickoffURL) —
+// unlike AccountButtonURL, these change on a schedule outside any
+// developer's control (bylaws revisions, a new kick-off event each cycle),
+// so a redeploy shouldn't be required to update them. Either may be empty
+// (not yet configured); the corresponding line is simply omitted rather
+// than emailing a dangling "Kick-off event: " with nothing after it.
+func BuildContract(introText, firstName, bylawsURL, lumaURL string) (subject, body string) {
+	if strings.TrimSpace(introText) == "" {
+		introText = DefaultContractIntro
+	}
+	intro := substitute(introText, firstName, "")
+
+	body = "Hi " + firstName + ",\n\n" + intro
+	if bylawsURL != "" {
+		body += "\n\nClub bylaws: " + bylawsURL
+	}
+	if lumaURL != "" {
+		body += "\n\nKick-off event (RSVP on Luma): " + lumaURL
+	}
+	return ContractSubject, body
+}
+
 // Load returns the current settings, or a zero-valued struct if none has
 // ever been saved — callers must fall back to each Build function's own
 // default themselves, so a database with no row behaves exactly as it did
@@ -194,7 +239,7 @@ func Load(db *gorm.DB) (models.OnboardingEmailSettings, error) {
 }
 
 // Save creates the singleton row on first save, or updates it thereafter.
-func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, updatedByEmail string) (models.OnboardingEmailSettings, error) {
+func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, contractIntro, bylawsURL, lumaKickoffURL, updatedByEmail string) (models.OnboardingEmailSettings, error) {
 	settings, err := Load(db)
 	if err != nil {
 		return settings, err
@@ -203,6 +248,9 @@ func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, 
 	settings.ConfirmIntroText = confirmIntro
 	settings.AccountIntroText = accountIntro
 	settings.MattermostIntroText = mattermostIntro
+	settings.ContractIntroText = contractIntro
+	settings.BylawsURL = bylawsURL
+	settings.LumaKickoffURL = lumaKickoffURL
 	settings.UpdatedByEmail = updatedByEmail
 
 	if settings.ID == 0 {
@@ -213,6 +261,9 @@ func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, 
 			"confirm_intro_text":    confirmIntro,
 			"account_intro_text":    accountIntro,
 			"mattermost_intro_text": mattermostIntro,
+			"contract_intro_text":   contractIntro,
+			"bylaws_url":            bylawsURL,
+			"luma_kickoff_url":      lumaKickoffURL,
 			"updated_by_email":      updatedByEmail,
 		}).Error
 	}

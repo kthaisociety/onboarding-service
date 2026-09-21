@@ -125,7 +125,7 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 
 	backend := backendclient.New(cfg)
 	mm := mattermost.New(cfg)
-	provisioningService := provisioning.NewService(db, newFakeGoogle(), mm, backend)
+	provisioningService := provisioning.NewService(db, cfg, newFakeGoogle(), mm, backend)
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -315,7 +315,7 @@ func TestPortalFlow(t *testing.T) {
 		require.Equal(t, models.StateComplete, record.State)
 		require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
 
-		require.Len(t, fake.sentEmails, 4, "start-portal, confirm, account-info, mattermost getting-started")
+		require.Len(t, fake.sentEmails, 5, "start-portal, confirm, account-info, mattermost getting-started, contract")
 		require.Len(t, fake.recordedAccounts, 1)
 		require.Equal(t, "grace.hopper@kthais.com", fake.recordedAccounts[0]["kthais_email"])
 	})
@@ -803,6 +803,7 @@ func TestEmailSettings(t *testing.T) {
 		require.Equal(t, emailcontent.DefaultStartIntro, body["start_intro_text"])
 		require.Equal(t, emailcontent.DefaultConfirmIntro, body["confirm_intro_text"])
 		require.Equal(t, emailcontent.DefaultMattermostIntro, body["mattermost_intro_text"])
+		require.Equal(t, emailcontent.DefaultContractIntro, body["contract_intro_text"])
 		// The account email has no non-empty default — it has no intro
 		// paragraph at all until an admin adds one.
 		require.Equal(t, "", body["account_intro_text"])
@@ -859,6 +860,26 @@ func TestEmailSettings(t *testing.T) {
 		require.Contains(t, body["body"], "Come say hi in #general!")
 	})
 
+	t.Run("contract preview uses the saved bylaws/Luma links, never fakes", func(t *testing.T) {
+		saveRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
+			"bylaws_url":       "https://kthais.com/bylaws.pdf",
+			"luma_kickoff_url": "https://lu.ma/kickoff",
+			"updated_by_email": "admin@kthais.com",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, saveRec.Code)
+
+		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
+			"kind": "contract", "intro_text": "Please sign by Friday, {{first_name}}!",
+		}, cfg.OnboardingServiceSecret)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, emailcontent.ContractSubject, body["subject"])
+		require.Contains(t, body["body"], "Please sign by Friday, "+emailcontent.PreviewFirstName+"!")
+		require.Contains(t, body["body"], "https://kthais.com/bylaws.pdf")
+		require.Contains(t, body["body"], "https://lu.ma/kickoff")
+	})
+
 	t.Run("unknown kind is rejected", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
 			"kind": "bogus", "intro_text": "whatever",
@@ -911,10 +932,12 @@ func TestEmailSettings(t *testing.T) {
 			confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 			require.Equal(t, http.StatusOK, confirmRec.Code)
 
-			accountEmail := fake.sentEmails[len(fake.sentEmails)-2]
-			mattermostEmail := fake.sentEmails[len(fake.sentEmails)-1]
+			accountEmail := fake.sentEmails[len(fake.sentEmails)-3]
+			mattermostEmail := fake.sentEmails[len(fake.sentEmails)-2]
+			contractEmail := fake.sentEmails[len(fake.sentEmails)-1]
 			require.Contains(t, accountEmail["body"], "Welcome aboard, Margaret!")
 			require.Contains(t, mattermostEmail["body"], "Say hi in #general, Margaret.")
+			require.Equal(t, emailcontent.ContractSubject, contractEmail["subject"])
 		})
 	})
 }
