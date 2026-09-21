@@ -860,8 +860,9 @@ func TestEmailSettings(t *testing.T) {
 		require.Contains(t, body["body"], "Come say hi in #general!")
 	})
 
-	t.Run("contract preview uses the saved bylaws/Luma links, never fakes", func(t *testing.T) {
+	t.Run("contract preview uses the saved contract/bylaws/Luma links, never fakes", func(t *testing.T) {
 		saveRec := doJSON(t, engine, "PUT", "/internal/onboarding/email-settings", map[string]string{
+			"contract_url":     "https://drive.google.com/file/d/contract-template/view",
 			"bylaws_url":       "https://kthais.com/bylaws.pdf",
 			"luma_kickoff_url": "https://lu.ma/kickoff",
 			"updated_by_email": "admin@kthais.com",
@@ -869,15 +870,19 @@ func TestEmailSettings(t *testing.T) {
 		require.Equal(t, http.StatusOK, saveRec.Code)
 
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/email-settings/preview", map[string]string{
-			"kind": "contract", "intro_text": "Please sign by Friday, {{first_name}}!",
+			"kind": "contract", "intro_text": "Please read ahead of the kick-off, {{first_name}}!",
 		}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, rec.Code)
 		var body map[string]string
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		require.Equal(t, emailcontent.ContractSubject, body["subject"])
-		require.Contains(t, body["body"], "Please sign by Friday, "+emailcontent.PreviewFirstName+"!")
+		require.Contains(t, body["body"], "Please read ahead of the kick-off, "+emailcontent.PreviewFirstName+"!")
 		require.Contains(t, body["body"], "https://kthais.com/bylaws.pdf")
 		require.Contains(t, body["body"], "https://lu.ma/kickoff")
+		// The contract button is now just the admin-set link, same as
+		// mattermost's — no per-record token minted or substituted.
+		require.Equal(t, "https://drive.google.com/file/d/contract-template/view", body["button_url"])
+		require.Equal(t, emailcontent.ContractButtonText, body["button_text"])
 	})
 
 	t.Run("unknown kind is rejected", func(t *testing.T) {
@@ -893,6 +898,7 @@ func TestEmailSettings(t *testing.T) {
 			"confirm_intro_text":    "One more step, {{first_name}}!",
 			"account_intro_text":    "Welcome aboard, {{first_name}}!",
 			"mattermost_intro_text": "Say hi in #general, {{first_name}}.",
+			"contract_url":          "https://drive.google.com/file/d/contract-2026/view",
 			"updated_by_email":      "admin@kthais.com",
 		}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, saveRec.Code)
@@ -938,6 +944,8 @@ func TestEmailSettings(t *testing.T) {
 			require.Contains(t, accountEmail["body"], "Welcome aboard, Margaret!")
 			require.Contains(t, mattermostEmail["body"], "Say hi in #general, Margaret.")
 			require.Equal(t, emailcontent.ContractSubject, contractEmail["subject"])
+			// Straight from settings, no per-record token minted for it.
+			require.Equal(t, "https://drive.google.com/file/d/contract-2026/view", contractEmail["button_url"])
 		})
 	})
 }

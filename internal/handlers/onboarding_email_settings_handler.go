@@ -40,6 +40,7 @@ type emailSettingsResponse struct {
 	AccountIntroText    string `json:"account_intro_text"`
 	MattermostIntroText string `json:"mattermost_intro_text"`
 	ContractIntroText   string `json:"contract_intro_text"`
+	ContractURL         string `json:"contract_url"`
 	BylawsURL           string `json:"bylaws_url"`
 	LumaKickoffURL      string `json:"luma_kickoff_url"`
 }
@@ -62,6 +63,7 @@ func settingsResponse(settings models.OnboardingEmailSettings) emailSettingsResp
 		AccountIntroText:    settings.AccountIntroText,
 		MattermostIntroText: orDefault(settings.MattermostIntroText, emailcontent.DefaultMattermostIntro),
 		ContractIntroText:   orDefault(settings.ContractIntroText, emailcontent.DefaultContractIntro),
+		ContractURL:         settings.ContractURL,
 		BylawsURL:           settings.BylawsURL,
 		LumaKickoffURL:      settings.LumaKickoffURL,
 	}
@@ -82,6 +84,7 @@ type updateEmailSettingsRequest struct {
 	AccountIntroText    string `json:"account_intro_text"`
 	MattermostIntroText string `json:"mattermost_intro_text"`
 	ContractIntroText   string `json:"contract_intro_text"`
+	ContractURL         string `json:"contract_url"`
 	BylawsURL           string `json:"bylaws_url"`
 	LumaKickoffURL      string `json:"luma_kickoff_url"`
 	UpdatedByEmail      string `json:"updated_by_email"`
@@ -100,6 +103,7 @@ func (h *EmailSettingsHandler) Update(c *gin.Context) {
 		strings.TrimSpace(req.AccountIntroText),
 		strings.TrimSpace(req.MattermostIntroText),
 		strings.TrimSpace(req.ContractIntroText),
+		strings.TrimSpace(req.ContractURL),
 		strings.TrimSpace(req.BylawsURL),
 		strings.TrimSpace(req.LumaKickoffURL),
 		strings.TrimSpace(req.UpdatedByEmail),
@@ -121,17 +125,17 @@ type previewEmailSettingsRequest struct {
 // panel's preview can never drift from what a real send would produce.
 // kind selects which of the five onboarding emails to render; the account
 // email is rendered with sample credentials, never real data; contract is
-// rendered with the currently saved BylawsURL/LumaKickoffURL, since those
-// are real admin-set links, not per-preview fakes.
+// rendered with the currently saved ContractURL/BylawsURL/LumaKickoffURL,
+// since those are real admin-set links, not per-preview fakes.
 //
-// Also returns the button this email would actually carry — account and
-// mattermost both have a fixed, non-admin-editable button (see
-// emailcontent.AccountButtonURL/Text and MattermostButtonText), so the
-// preview can show the real thing instead of leaving it for the caller to
-// guess or fall back to a default. start, confirm, and contract return only
-// a button text, no URL: their real ones are per-record portal token URLs
-// that don't exist yet for a preview — landingpage-backend's proxy
-// substitutes its own placeholder for those three.
+// Also returns the button this email would actually carry — account,
+// mattermost, and contract all have a fixed button once configured (see
+// emailcontent.AccountButtonURL/Text, MattermostButtonText, and
+// ContractURL/ContractButtonText), so the preview can show the real thing
+// instead of leaving it for the caller to guess or fall back to a default.
+// start and confirm return only a button text, no URL: their real ones are
+// per-record portal token URLs that don't exist yet for a preview —
+// landingpage-backend's proxy substitutes its own placeholder for those two.
 func (h *EmailSettingsHandler) Preview(c *gin.Context) {
 	var req previewEmailSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -160,7 +164,7 @@ func (h *EmailSettingsHandler) Preview(c *gin.Context) {
 			return
 		}
 		subject, body = emailcontent.BuildContract(req.IntroText, emailcontent.PreviewFirstName, settings.BylawsURL, settings.LumaKickoffURL)
-		buttonText = emailcontent.ContractButtonText
+		buttonURL, buttonText = settings.ContractURL, emailcontent.ContractButtonText
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost, contract"})
 		return

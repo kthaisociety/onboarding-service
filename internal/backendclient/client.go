@@ -13,8 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"mime"
 	"net/http"
 	"time"
 
@@ -110,65 +108,6 @@ func (c *Client) RemoveFromLumaMembers(ctx context.Context, email string) error 
 		return nil
 	}
 	return err
-}
-
-// ContractTemplate is the currently uploaded membership-contract file, as
-// fetched from landingpage-backend — see GetContractTemplate.
-type ContractTemplate struct {
-	Data        []byte
-	ContentType string
-	FileName    string
-}
-
-// GetContractTemplate fetches the membership-contract template file this
-// backend has stored (via its own admin upload endpoint), so
-// PortalHandler.DownloadContract can relay it to a member clicking their
-// emailed contract link. This service has no storage credentials of its
-// own — same reasoning as reusing the backend's SES setup for
-// SendEmail above — so the file always lives on, and is served through,
-// landingpage-backend. Returns ErrRouteNotFound (via errors.Is) if no
-// template has been uploaded yet, distinguishable from a real failure.
-func (c *Client) GetContractTemplate(ctx context.Context) (ContractTemplate, error) {
-	if c.cfg.BackendURL == "" {
-		return ContractTemplate{}, fmt.Errorf("BACKEND_URL is not configured")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.BackendURL+"/internal/onboarding/contract-template", nil)
-	if err != nil {
-		return ContractTemplate{}, fmt.Errorf("failed to build request: %w", err)
-	}
-	req.Header.Set("X-Service-Secret", c.cfg.OnboardingServiceSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return ContractTemplate{}, fmt.Errorf("request to /internal/onboarding/contract-template failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return ContractTemplate{}, fmt.Errorf("no contract template uploaded: %w", ErrRouteNotFound)
-	}
-	if resp.StatusCode >= 300 {
-		return ContractTemplate{}, fmt.Errorf("backend returned %d for /internal/onboarding/contract-template", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ContractTemplate{}, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	filename := "contract"
-	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
-		if name, ok := params["filename"]; ok && name != "" {
-			filename = name
-		}
-	}
-
-	return ContractTemplate{
-		Data:        data,
-		ContentType: resp.Header.Get("Content-Type"),
-		FileName:    filename,
-	}, nil
 }
 
 func (c *Client) post(path string, body any) error {

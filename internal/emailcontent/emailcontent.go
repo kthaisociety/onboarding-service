@@ -94,8 +94,10 @@ const ContractSubject = "Your KTH AI Society membership contract"
 const DefaultContractIntro = "Ahead of our kick-off event, take a moment to read through your KTH AI Society membership contract below — you'll sign it in person there. You can also find our bylaws and the kick-off event details below."
 
 // ContractButtonText labels the contract email's button, which points at
-// the emailed download link (a per-record token URL, built by whatever
-// calls BuildContract — see provisioning.Service.sendFinalEmails). Says
+// OnboardingEmailSettings.ContractURL — a fixed link an admin pastes in
+// (see that field's own doc comment for why: a Google Drive doc shared
+// within the kthais.com org, Google's own domain-restricted sharing acting
+// as the auth, not a file this service stores or serves itself). Says
 // "View", not "sign": signing happens in person at the kick-off event, this
 // link is only for reading it in advance. The bylaws and kick-off links
 // travel as plain text in the body instead, same treatment as
@@ -239,7 +241,7 @@ func Load(db *gorm.DB) (models.OnboardingEmailSettings, error) {
 }
 
 // Save creates the singleton row on first save, or updates it thereafter.
-func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, contractIntro, bylawsURL, lumaKickoffURL, updatedByEmail string) (models.OnboardingEmailSettings, error) {
+func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, contractIntro, contractURL, bylawsURL, lumaKickoffURL, updatedByEmail string) (models.OnboardingEmailSettings, error) {
 	settings, err := Load(db)
 	if err != nil {
 		return settings, err
@@ -249,6 +251,7 @@ func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, 
 	settings.AccountIntroText = accountIntro
 	settings.MattermostIntroText = mattermostIntro
 	settings.ContractIntroText = contractIntro
+	settings.ContractURL = contractURL
 	settings.BylawsURL = bylawsURL
 	settings.LumaKickoffURL = lumaKickoffURL
 	settings.UpdatedByEmail = updatedByEmail
@@ -262,6 +265,7 @@ func Save(db *gorm.DB, startIntro, confirmIntro, accountIntro, mattermostIntro, 
 			"account_intro_text":    accountIntro,
 			"mattermost_intro_text": mattermostIntro,
 			"contract_intro_text":   contractIntro,
+			"contract_url":          contractURL,
 			"bylaws_url":            bylawsURL,
 			"luma_kickoff_url":      lumaKickoffURL,
 			"updated_by_email":      updatedByEmail,

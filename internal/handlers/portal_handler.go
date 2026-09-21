@@ -2,8 +2,6 @@ package handlers
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -45,7 +43,6 @@ func (h *PortalHandler) Register(r *gin.RouterGroup) {
 		portal.POST("/submit-email", h.SubmitEmail)
 		portal.GET("/confirm", h.ConfirmInfo)
 		portal.POST("/confirm", h.Confirm)
-		portal.GET("/contract", h.DownloadContract)
 	}
 }
 
@@ -232,42 +229,4 @@ func (h *PortalHandler) Confirm(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, record)
-}
-
-// DownloadContract serves the membership-contract file behind a
-// per-record, non-single-use token (see models.PurposeContractDownload) —
-// safe to call any number of times, same as ConfirmInfo above, since a
-// member may come back to it more than once (e.g. to re-download after
-// signing). The file itself always lives on landingpage-backend (see
-// backendclient.GetContractTemplate's doc comment for why); this handler is
-// just the token-authenticated relay a member's emailed link actually
-// points at.
-func (h *PortalHandler) DownloadContract(c *gin.Context) {
-	token, err := lookupToken(h.db, models.PurposeContractDownload, c.Query("token"))
-	if err != nil {
-		c.JSON(http.StatusNotFound, invalidLinkError)
-		return
-	}
-
-	var record models.OnboardingRecord
-	if err := h.db.First(&record, token.OnboardingRecordID).Error; err != nil {
-		c.JSON(http.StatusNotFound, invalidLinkError)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
-	defer cancel()
-	contract, err := h.backend.GetContractTemplate(ctx)
-	if err != nil {
-		if errors.Is(err, backendclient.ErrRouteNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "no contract template has been uploaded yet"})
-			return
-		}
-		log.Printf("contract: failed to fetch template for record %d: %v", record.ID, err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch the contract"})
-		return
-	}
-
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, contract.FileName))
-	c.Data(http.StatusOK, contract.ContentType, contract.Data)
 }

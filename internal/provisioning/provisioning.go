@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"onboarding-service/internal/backendclient"
 	"onboarding-service/internal/config"
@@ -209,39 +208,18 @@ func (s *Service) sendFinalEmails(record *models.OnboardingRecord, tempPassword 
 		return fmt.Errorf("mattermost getting-started email: %w", err)
 	}
 
-	contractLink, err := s.issueContractDownloadLink(record)
-	if err != nil {
-		return fmt.Errorf("contract download link: %w", err)
-	}
+	// ContractURL is a fixed link an admin pastes in (a Google Drive doc
+	// shared within the kthais.com org) — see
+	// models.OnboardingEmailSettings.ContractURL's own doc comment for why
+	// this doesn't mint a per-record token the way the other emails' links
+	// do: Google's own domain-restricted sharing is the auth here, so
+	// there's nothing for this service to issue or serve itself.
 	contractSubject, contractBody := emailcontent.BuildContract(settings.ContractIntroText, record.FirstName, settings.BylawsURL, settings.LumaKickoffURL)
-	if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, contractLink, emailcontent.ContractButtonText); err != nil {
+	if err := s.backend.SendEmail(record.KthEmail, contractSubject, contractBody, settings.ContractURL, emailcontent.ContractButtonText); err != nil {
 		return fmt.Errorf("contract email: %w", err)
 	}
 
 	return nil
-}
-
-// issueContractDownloadLink mints a fresh contract_download token for
-// record and returns the emailable link — a new token each time
-// sendFinalEmails runs (including on a retry), same as ensureAccount
-// minting a new temp password on retry rather than trying to recover a
-// prior one; the old token, if any, is simply left to expire unused rather
-// than revoked, since it's harmless for more than one valid link to exist.
-func (s *Service) issueContractDownloadLink(record *models.OnboardingRecord) (string, error) {
-	raw, hash, err := utils.GenerateToken()
-	if err != nil {
-		return "", err
-	}
-	token := models.OnboardingToken{
-		OnboardingRecordID: record.ID,
-		Purpose:            models.PurposeContractDownload,
-		TokenHash:          hash,
-		ExpiresAt:          time.Now().Add(config.ContractDownloadTokenValidity),
-	}
-	if err := s.db.Create(&token).Error; err != nil {
-		return "", err
-	}
-	return s.cfg.PortalBaseURL + "/contract?token=" + raw, nil
 }
 
 func (s *Service) save(record *models.OnboardingRecord, state models.OnboardingState) error {
