@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,10 +61,59 @@ const (
 // endpoints so this test never needs real SES/Postgres — it just records
 // what was sent/recorded so tests can assert on it without caring about
 // actual delivery.
+//
+// The handlers below run on the test server's goroutines, and /notify sends
+// its email from a goroutine of its own, so every field is behind mu and
+// tests use the accessors, never the fields.
 type fakeBackend struct {
+	mu               sync.Mutex
 	sentEmails       []map[string]string
 	recordedAccounts []map[string]string
 	sendEmailFail    bool
+}
+
+func (f *fakeBackend) emailCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sentEmails)
+}
+
+// email returns the i-th sent email.
+func (f *fakeBackend) email(i int) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sentEmails[i]
+}
+
+func (f *fakeBackend) lastEmail() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sentEmails[len(f.sentEmails)-1]
+}
+
+// emails returns a copy of every sent email.
+func (f *fakeBackend) emails() []map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]string(nil), f.sentEmails...)
+}
+
+func (f *fakeBackend) account(i int) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.recordedAccounts[i]
+}
+
+func (f *fakeBackend) accounts() []map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]string(nil), f.recordedAccounts...)
+}
+
+func (f *fakeBackend) setSendEmailFail(fail bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sendEmailFail = fail
 }
 
 func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
@@ -73,18 +123,25 @@ func newTestServer(t *testing.T) (*gin.Engine, *config.Config, *fakeBackend) {
 	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/onboarding/send-email":
-			if fake.sendEmailFail {
+			fake.mu.Lock()
+			fail := fake.sendEmailFail
+			fake.mu.Unlock()
+			if fail {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			var body map[string]string
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			fake.mu.Lock()
 			fake.sentEmails = append(fake.sentEmails, body)
+			fake.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		case "/internal/onboarding/record-account":
 			var body map[string]string
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			fake.mu.Lock()
 			fake.recordedAccounts = append(fake.recordedAccounts, body)
+			fake.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		case "/internal/onboarding/add-to-luma":
 			// This flow only needs provisioning to reach state=complete, so
@@ -184,16 +241,16 @@ func TestNotify(t *testing.T) {
 		require.Equal(t, "app-123", *record.ApplicationID)
 		require.Equal(t, models.StateNotified, record.State)
 
-		require.Eventually(t, func() bool { return len(fake.sentEmails) == 1 }, waitFor, tick)
-		require.Equal(t, "ada@example.com", fake.sentEmails[0]["to"])
-		require.Contains(t, fake.sentEmails[0]["button_url"], cfg.PortalBaseURL+"/start?token=")
+		require.Eventually(t, func() bool { return fake.emailCount() == 1 }, waitFor, tick)
+		require.Equal(t, "ada@example.com", fake.email(0)["to"])
+		require.Contains(t, fake.email(0)["button_url"], cfg.PortalBaseURL+"/start?token=")
 	})
 
 	t.Run("a second notify for the same application is idempotent", func(t *testing.T) {
-		emailsBefore := len(fake.sentEmails)
+		emailsBefore := fake.emailCount()
 		rec := doJSON(t, engine, "POST", "/notify", notifyBody, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, rec.Code)
-		require.Equal(t, emailsBefore, len(fake.sentEmails), "should not send a second start-portal email")
+		require.Equal(t, emailsBefore, fake.emailCount(), "should not send a second start-portal email")
 	})
 
 	t.Run("missing fields are rejected", func(t *testing.T) {
@@ -250,8 +307,8 @@ func TestPortalFlow(t *testing.T) {
 	}, cfg.OnboardingServiceSecret)
 	require.Equal(t, http.StatusOK, notifyRec.Code)
 
-	require.Eventually(t, func() bool { return len(fake.sentEmails) == 1 }, waitFor, tick)
-	startToken := extractToken(t, fake.sentEmails[0]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() == 1 }, waitFor, tick)
+	startToken := extractToken(t, fake.email(0)["button_url"])
 
 	t.Run("wrong or missing token is rejected", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
@@ -278,8 +335,8 @@ func TestPortalFlow(t *testing.T) {
 		require.Equal(t, models.StateKthEmailSubmitted, record.State)
 		require.Equal(t, "grace@kth.se", record.KthEmail)
 
-		require.Eventually(t, func() bool { return len(fake.sentEmails) == 2 }, waitFor, tick)
-		require.Equal(t, "grace@kth.se", fake.sentEmails[1]["to"])
+		require.Eventually(t, func() bool { return fake.emailCount() == 2 }, waitFor, tick)
+		require.Equal(t, "grace@kth.se", fake.email(1)["to"])
 	})
 
 	t.Run("the start-portal token cannot be reused", func(t *testing.T) {
@@ -289,7 +346,7 @@ func TestPortalFlow(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, rec.Code)
 	})
 
-	confirmToken := extractToken(t, fake.sentEmails[1]["button_url"])
+	confirmToken := extractToken(t, fake.email(1)["button_url"])
 
 	t.Run("confirming with the wrong token is rejected", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": "bogus"}, "")
@@ -327,9 +384,9 @@ func TestPortalFlow(t *testing.T) {
 		require.Equal(t, models.StateComplete, record.State)
 		require.Equal(t, "grace.hopper@kthais.com", record.KthaisEmail)
 
-		require.Len(t, fake.sentEmails, 5, "start-portal, confirm, account-info, mattermost getting-started, contract")
-		require.Len(t, fake.recordedAccounts, 1)
-		require.Equal(t, "grace.hopper@kthais.com", fake.recordedAccounts[0]["kthais_email"])
+		require.Len(t, fake.emails(), 5, "start-portal, confirm, account-info, mattermost getting-started, contract")
+		require.Len(t, fake.accounts(), 1)
+		require.Equal(t, "grace.hopper@kthais.com", fake.account(0)["kthais_email"])
 	})
 
 	t.Run("the confirm token cannot be reused", func(t *testing.T) {
@@ -356,16 +413,16 @@ func TestRetryProvisioning(t *testing.T) {
 		"assigned_team":  "IT",
 	}, cfg.OnboardingServiceSecret)
 	require.Equal(t, http.StatusOK, notifyRec.Code)
-	require.Eventually(t, func() bool { return len(fake.sentEmails) == 1 }, waitFor, tick)
-	startToken := extractToken(t, fake.sentEmails[0]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() == 1 }, waitFor, tick)
+	startToken := extractToken(t, fake.email(0)["button_url"])
 
 	doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
 		"token": startToken, "kth_email": "ada@kth.se",
 	}, "")
-	require.Eventually(t, func() bool { return len(fake.sentEmails) == 2 }, waitFor, tick)
-	confirmToken := extractToken(t, fake.sentEmails[1]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() == 2 }, waitFor, tick)
+	confirmToken := extractToken(t, fake.email(1)["button_url"])
 
-	fake.sendEmailFail = true
+	fake.setSendEmailFail(true)
 	rec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -381,7 +438,7 @@ func TestRetryProvisioning(t *testing.T) {
 	})
 
 	t.Run("retry succeeds once the underlying problem is fixed", func(t *testing.T) {
-		fake.sendEmailFail = false
+		fake.setSendEmailFail(false)
 		rec := doJSON(t, engine, "POST", "/internal/onboarding/retry-provisioning",
 			map[string]string{"application_id": "app-retry"}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -420,7 +477,7 @@ func TestRecordsHandler(t *testing.T) {
 			"personal_email": "ada@example.com",
 			"assigned_team":  "IT",
 		}, cfg.OnboardingServiceSecret)
-		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
+		require.Eventually(t, func() bool { return fake.emailCount() >= 1 }, waitFor, tick)
 
 		doJSON(t, engine, "POST", "/notify", map[string]string{
 			"application_id": "app-records-2",
@@ -429,7 +486,7 @@ func TestRecordsHandler(t *testing.T) {
 			"personal_email": "grace@example.com",
 			"assigned_team":  "Development",
 		}, cfg.OnboardingServiceSecret)
-		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
+		require.Eventually(t, func() bool { return fake.emailCount() >= 2 }, waitFor, tick)
 
 		rec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -452,16 +509,16 @@ func TestRetryProvisioningByRecordID(t *testing.T) {
 		"personal_email": "ada@example.com",
 		"assigned_team":  "IT",
 	}, cfg.OnboardingServiceSecret)
-	require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
-	startToken := extractToken(t, fake.sentEmails[0]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() >= 1 }, waitFor, tick)
+	startToken := extractToken(t, fake.email(0)["button_url"])
 
 	doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
 		"token": startToken, "kth_email": "ada@kth.se",
 	}, "")
-	require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
-	confirmToken := extractToken(t, fake.sentEmails[1]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() >= 2 }, waitFor, tick)
+	confirmToken := extractToken(t, fake.email(1)["button_url"])
 
-	fake.sendEmailFail = true
+	fake.setSendEmailFail(true)
 	confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 	require.Equal(t, http.StatusOK, confirmRec.Code)
 
@@ -487,7 +544,7 @@ func TestRetryProvisioningByRecordID(t *testing.T) {
 	})
 
 	t.Run("retrying by record id succeeds once the underlying problem is fixed", func(t *testing.T) {
-		fake.sendEmailFail = false
+		fake.setSendEmailFail(false)
 		rec := postJSON(map[string]any{"id": failed.ID})
 		require.Equal(t, http.StatusOK, rec.Code)
 
@@ -518,8 +575,8 @@ func TestCancel(t *testing.T) {
 		"personal_email": "ada@example.com",
 		"assigned_team":  "IT",
 	}, cfg.OnboardingServiceSecret)
-	require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
-	startToken := extractToken(t, fake.sentEmails[0]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() >= 1 }, waitFor, tick)
+	startToken := extractToken(t, fake.email(0)["button_url"])
 
 	// Fetch the record via the records endpoint rather than trusting the
 	// notify response body's shape here — simpler than threading it through.
@@ -567,14 +624,14 @@ func TestCancel(t *testing.T) {
 			"personal_email": "grace-cancel@example.com",
 			"assigned_team":  "Development",
 		}, cfg.OnboardingServiceSecret)
-		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
-		graceStartToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+		require.Eventually(t, func() bool { return fake.emailCount() >= 2 }, waitFor, tick)
+		graceStartToken := extractToken(t, fake.lastEmail()["button_url"])
 
 		doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
 			"token": graceStartToken, "kth_email": "grace-cancel@kth.se",
 		}, "")
-		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 3 }, waitFor, tick)
-		graceConfirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+		require.Eventually(t, func() bool { return fake.emailCount() >= 3 }, waitFor, tick)
+		graceConfirmToken := extractToken(t, fake.lastEmail()["button_url"])
 
 		confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": graceConfirmToken}, "")
 		var complete models.OnboardingRecord
@@ -621,14 +678,14 @@ func TestRestart(t *testing.T) {
 			"personal_email": "grace@example.com",
 			"assigned_team":  "Development",
 		}, cfg.OnboardingServiceSecret)
-		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 1 }, waitFor, tick)
-		graceStartToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+		require.Eventually(t, func() bool { return fake.emailCount() >= 1 }, waitFor, tick)
+		graceStartToken := extractToken(t, fake.lastEmail()["button_url"])
 
 		doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
 			"token": graceStartToken, "kth_email": "grace@kth.se",
 		}, "")
-		require.Eventually(t, func() bool { return len(fake.sentEmails) >= 2 }, waitFor, tick)
-		graceConfirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+		require.Eventually(t, func() bool { return fake.emailCount() >= 2 }, waitFor, tick)
+		graceConfirmToken := extractToken(t, fake.lastEmail()["button_url"])
 
 		confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": graceConfirmToken}, "")
 		var complete models.OnboardingRecord
@@ -640,12 +697,16 @@ func TestRestart(t *testing.T) {
 	})
 
 	t.Run("restarting a cancelled record is rejected", func(t *testing.T) {
+		emailsBefore := fake.emailCount()
 		doJSON(t, engine, "POST", "/notify", map[string]string{
 			"first_name":     "Bob",
 			"last_name":      "Noyce",
 			"personal_email": "bob@example.com",
 			"assigned_team":  "IT",
 		}, cfg.OnboardingServiceSecret)
+		// /notify sends Bob's start email asynchronously. Wait for it, or it
+		// can land after the baseline below and be taken for Ada's.
+		require.Eventually(t, func() bool { return fake.emailCount() >= emailsBefore+1 }, waitFor, tick)
 
 		listRec := doJSON(t, engine, "GET", "/internal/onboarding/records", nil, cfg.OnboardingServiceSecret)
 		var records []models.OnboardingRecord
@@ -663,7 +724,7 @@ func TestRestart(t *testing.T) {
 	// portal ones (account-info + Mattermost getting-started, from
 	// sendFinalEmails) — baseline off the count as it now stands rather
 	// than assuming an exact total.
-	baseline := len(fake.sentEmails)
+	baseline := fake.emailCount()
 
 	doJSON(t, engine, "POST", "/notify", map[string]string{
 		"first_name":     "Ada",
@@ -671,21 +732,21 @@ func TestRestart(t *testing.T) {
 		"personal_email": "ada@example.com",
 		"assigned_team":  "IT",
 	}, cfg.OnboardingServiceSecret)
-	require.Eventually(t, func() bool { return len(fake.sentEmails) >= baseline+1 }, waitFor, tick)
-	startToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() >= baseline+1 }, waitFor, tick)
+	startToken := extractToken(t, fake.lastEmail()["button_url"])
 
 	doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
 		"token": startToken, "kth_email": "ada@kth.se",
 	}, "")
-	require.Eventually(t, func() bool { return len(fake.sentEmails) >= baseline+2 }, waitFor, tick)
-	confirmToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+	require.Eventually(t, func() bool { return fake.emailCount() >= baseline+2 }, waitFor, tick)
+	confirmToken := extractToken(t, fake.lastEmail()["button_url"])
 
 	// Google succeeds (so KthaisEmail gets set) but the final-emails step
 	// fails, so the record ends up StateFailed with a real KthaisEmail
 	// already on it — exactly the case restart must not clobber. (There's
 	// no Mattermost invite step anymore to induce this — see
 	// provisioning.Service.Provision.)
-	fake.sendEmailFail = true
+	fake.setSendEmailFail(true)
 	confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 	var failed models.OnboardingRecord
 	require.NoError(t, json.Unmarshal(confirmRec.Body.Bytes(), &failed))
@@ -695,9 +756,9 @@ func TestRestart(t *testing.T) {
 	// Restart re-sends the start-onboarding email (see below) — clear the
 	// fault now that it's done its job of producing a failed record, or
 	// that resend fails too and the test hangs waiting for it.
-	fake.sendEmailFail = false
+	fake.setSendEmailFail(false)
 
-	emailsBeforeRestart := len(fake.sentEmails)
+	emailsBeforeRestart := fake.emailCount()
 
 	rec := postJSON("/internal/onboarding/restart", map[string]any{"id": failed.ID})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -708,7 +769,7 @@ func TestRestart(t *testing.T) {
 	require.Equal(t, "ada.lovelace@kthais.com", restarted.KthaisEmail, "an already-provisioned address must survive a restart")
 	require.Empty(t, restarted.FailureReason)
 
-	require.Eventually(t, func() bool { return len(fake.sentEmails) > emailsBeforeRestart }, waitFor, tick)
+	require.Eventually(t, func() bool { return fake.emailCount() > emailsBeforeRestart }, waitFor, tick)
 
 	t.Run("the old confirm token no longer works after restart", func(t *testing.T) {
 		rec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
@@ -716,7 +777,7 @@ func TestRestart(t *testing.T) {
 	})
 
 	t.Run("the new start-portal link works", func(t *testing.T) {
-		newStartToken := extractToken(t, fake.sentEmails[len(fake.sentEmails)-1]["button_url"])
+		newStartToken := extractToken(t, fake.lastEmail()["button_url"])
 		rec := doJSON(t, engine, "POST", "/portal/submit-email", map[string]string{
 			"token": newStartToken, "kth_email": "ada@kth.se",
 		}, "")
@@ -947,7 +1008,7 @@ func TestEmailSettings(t *testing.T) {
 		require.NoError(t, json.Unmarshal(saveRec.Body.Bytes(), &saved))
 		require.Equal(t, "Hi {{first_name}}, so glad you're joining us!", saved["start_intro_text"])
 
-		emailsBefore := len(fake.sentEmails)
+		emailsBefore := fake.emailCount()
 		rec := doJSON(t, engine, "POST", "/notify", map[string]string{
 			"first_name":     "Margaret",
 			"last_name":      "Hamilton",
@@ -956,8 +1017,8 @@ func TestEmailSettings(t *testing.T) {
 		}, cfg.OnboardingServiceSecret)
 		require.Equal(t, http.StatusOK, rec.Code)
 
-		require.Eventually(t, func() bool { return len(fake.sentEmails) > emailsBefore }, waitFor, tick)
-		startEmail := fake.sentEmails[len(fake.sentEmails)-1]
+		require.Eventually(t, func() bool { return fake.emailCount() > emailsBefore }, waitFor, tick)
+		startEmail := fake.lastEmail()
 		require.Contains(t, startEmail["body"], "Hi Margaret, so glad you're joining us!")
 		// The fixed next-steps list is still appended after the custom intro.
 		require.Contains(t, startEmail["body"], "To get started:")
@@ -971,17 +1032,17 @@ func TestEmailSettings(t *testing.T) {
 				"token": startToken, "kth_email": "margaret@kth.se",
 			}, "")
 			require.Equal(t, http.StatusOK, submitRec.Code)
-			require.Eventually(t, func() bool { return len(fake.sentEmails) > emailsBefore+1 }, waitFor, tick)
-			confirmEmail := fake.sentEmails[len(fake.sentEmails)-1]
+			require.Eventually(t, func() bool { return fake.emailCount() > emailsBefore+1 }, waitFor, tick)
+			confirmEmail := fake.lastEmail()
 			require.Contains(t, confirmEmail["body"], "One more step, Margaret!")
 			confirmToken := extractToken(t, confirmEmail["button_url"])
 
 			confirmRec := doJSON(t, engine, "POST", "/portal/confirm", map[string]string{"token": confirmToken}, "")
 			require.Equal(t, http.StatusOK, confirmRec.Code)
 
-			accountEmail := fake.sentEmails[len(fake.sentEmails)-3]
-			mattermostEmail := fake.sentEmails[len(fake.sentEmails)-2]
-			contractEmail := fake.sentEmails[len(fake.sentEmails)-1]
+			accountEmail := fake.email(fake.emailCount() - 3)
+			mattermostEmail := fake.email(fake.emailCount() - 2)
+			contractEmail := fake.lastEmail()
 			require.Contains(t, accountEmail["body"], "Welcome aboard, Margaret!")
 			require.Contains(t, mattermostEmail["body"], "Say hi in #general, Margaret.")
 			require.Equal(t, emailcontent.ContractSubject, contractEmail["subject"])
