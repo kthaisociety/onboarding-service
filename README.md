@@ -52,7 +52,7 @@ Built, released and deployed through the KTHAIS pipeline
   deployed to **staging** through
   [kthaisociety/deployments](https://github.com/kthaisociety/deployments) (`build.yml`).
 - **Releases:** release-please keeps a release PR with the next version and `CHANGELOG.md`. A code owner
-  (`@kthaisociety/it-team`) merging it publishes `vX.Y.Z` and tags that commit's image `X.Y.Z`.
+  (in `.github/CODEOWNERS`) merging it publishes `vX.Y.Z` and tags that commit's image `X.Y.Z`.
   Production deploys from releases are switched on with the move off the old Dokploy app
   ([migration](https://github.com/kthaisociety/infrastructure/blob/main/docs/onboarding-service-migration.md)).
 - **Config and secrets** live in `kthaisociety/deployments` (`projects/onboarding-service/`) and OpenBao,
