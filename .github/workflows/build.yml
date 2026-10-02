@@ -1,5 +1,7 @@
-# Every push to main: test, then build and push ghcr.io/kthaisociety/onboarding-service:sha-<7>.
-# release.yml waits for this workflow's run of a release commit, so the two stay separate files.
+# Every push to main: test, build and push ghcr.io/kthaisociety/onboarding-service:sha-<7>, then deploy
+# it to staging through kthaisociety/deployments, and wait until it runs there. release.yml waits for this
+# workflow's run of a release commit (so a release is promoted only after it ran on staging): the two stay
+# separate files.
 name: build
 
 on:
@@ -25,7 +27,17 @@ jobs:
 
   build:
     needs: test
-    uses: kthaisociety/workflows/.github/workflows/build.yml@v0.1.0
+    uses: kthaisociety/workflows/.github/workflows/build.yml@v0.2.0
     permissions:
       contents: read
       packages: write
+
+  deploy-staging:
+    needs: build
+    uses: kthaisociety/workflows/.github/workflows/request-deploy.yml@v0.2.0
+    with:
+      environment: staging
+      tag: ${{ needs.build.outputs.tag }}
+    secrets:
+      dispatch-app-client-id: ${{ secrets.DISPATCH_APP_CLIENT_ID }}
+      dispatch-app-private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
