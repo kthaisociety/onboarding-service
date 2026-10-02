@@ -10,7 +10,7 @@ permissions: {}
 jobs:
   # PRs are squash-merged, so the title becomes the commit release-please reads.
   title:
-    uses: kthaisociety/workflows/.github/workflows/semantic-pr.yml@v0.1.0
+    uses: kthaisociety/workflows/.github/workflows/semantic-pr.yml@v0.2.0
     permissions:
       pull-requests: read
 

@@ -10,7 +10,7 @@ permissions: {}
 
 jobs:
   release:
-    uses: kthaisociety/workflows/.github/workflows/release.yml@v0.1.0
+    uses: kthaisociety/workflows/.github/workflows/release.yml@v0.2.0
     with:
       build-workflow: build.yml
     permissions:
