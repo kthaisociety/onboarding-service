@@ -1,3 +1,6 @@
-# Code owners are asked to review every human PR (and here, approve releases). Just Sam for now, so the
-# whole IT team isn't emailed on every bot and release PR; widen it when more people review.
-* @sammosios
+# Code owners must approve every PR (ruleset: require code owner review).
+# The last matching pattern wins.
+* @kthaisociety/software-engineers
+
+# CI/CD workflows run with repo secrets, so Platform reviews them.
+/.github/workflows/ @kthaisociety/platform-engineers
